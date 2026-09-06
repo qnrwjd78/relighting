@@ -9,7 +9,7 @@ the Docker workspace mount in the main README matches that layout.
 
 ## What belongs in Git
 
-- `model/`, `scripts/`, `utils/`, `tokenlight_dataset/`: project source code.
+- `model/`, `scripts/`, `utils/`, `relighting_dataset/`: project source code.
 - `configs/`: experiment parameters and distributed training configuration.
 - `tests/`, `docs/`, `docker/`, `patches/`, and root Markdown files: tests,
   documentation, environment definition, and local third-party changes.
@@ -89,6 +89,6 @@ from the current working tree.
 - [CoShadow fixed32](COSHADOW_FIXED32.md)
 - [Physics-conditioned training](PHYSICS_CONDITIONED_TRAINING.md)
 - [Shadow refinement pipeline](SHADOW_C2F_PIPELINE.md)
-- [MoGe3 spatial geometry design](TOKENLIGHT_MOGE3_SPATIAL_GEOMETRY_DESIGN.md)
+- [MoGe3 spatial geometry design](MOGE3_SPATIAL_GEOMETRY_DESIGN.md)
 - [Model notes](../model_info.md)
 - [Model settings summary](../model_settings_summary.md)

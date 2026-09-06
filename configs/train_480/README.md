@@ -7,18 +7,18 @@ refer to older configurations that are no longer in the active checkout.
 
 | Group / variant | Entrypoint | Configuration |
 | --- | --- | --- |
-| exp_0 RGB baseline | `model/train_tokenlight_single.py` | `rgb_baseline_15ep_b8_ga40.json` |
-| exp_0 decoder loss | `model/train_tokenlight_decoder_safe.py` | `rgb_decoder_loss_15ep_b8_ga40.json` |
-| exp_0 shadow mask | `model/train_tokenlight_decoder_safe.py` | `rgb_shadow_mask_vae_15ep_b8_ga40.json` |
-| exp_0 shadow + light mask | `model/train_tokenlight_decoder_safe.py` | `rgb_shadow_light_mask_vae_15ep_b8_ga40.json` |
-| exp_0 delta-flow | `model/train_tokenlight_delta_flow.py` | Baseline config plus delta-flow CLI options / saved run config |
-| exp_0 MoGe3 pointmap | `model/train_tokenlight_moge3_pointmap.py train` | Saved run config plus prepared MoGe cache |
-| exp_1 baseline / delta | `model/train_tokenlight_scene_cache_v2_retained.py baseline` / `delta` | Corresponding `exp1_*baseline*` / `exp1_*delta*` JSON |
-| exp_1 pointmap | `model/train_tokenlight_pointmap_scene_cache_v2.py` | `exp1_*pointmap_baseline*` JSON |
-| exp_1 shadow mask | `model/train_tokenlight_scene_cache_shadow_safe_retained.py` | `exp1_*shadow_mask_vae*` JSON |
-| exp_2 joint RGB / shadow | `model/train_tokenlight_joint_mask.py` | `exp2_*joint_shadow_mask*` JSON |
+| exp_0 RGB baseline | `model/train_single.py` | `rgb_baseline_15ep_b8_ga40.json` |
+| exp_0 decoder loss | `model/train_decoder_safe.py` | `rgb_decoder_loss_15ep_b8_ga40.json` |
+| exp_0 shadow mask | `model/train_decoder_safe.py` | `rgb_shadow_mask_vae_15ep_b8_ga40.json` |
+| exp_0 shadow + light mask | `model/train_decoder_safe.py` | `rgb_shadow_light_mask_vae_15ep_b8_ga40.json` |
+| exp_0 delta-flow | `model/train_delta_flow.py` | Baseline config plus delta-flow CLI options / saved run config |
+| exp_0 MoGe3 pointmap | `model/train_moge3_pointmap.py train` | Saved run config plus prepared MoGe cache |
+| exp_1 baseline / delta | `model/train_scene_cache_v2_retained.py baseline` / `delta` | Corresponding `exp1_*baseline*` / `exp1_*delta*` JSON |
+| exp_1 pointmap | `model/train_pointmap_scene_cache_v2.py` | `exp1_*pointmap_baseline*` JSON |
+| exp_1 shadow mask | `model/train_scene_cache_shadow_safe_retained.py` | `exp1_*shadow_mask_vae*` JSON |
+| exp_2 joint RGB / shadow | `model/train_joint_mask.py` | `exp2_*joint_shadow_mask*` JSON |
 
-The older `model/train_tokenlight_scene_cache_v2.py` entrypoint also remains
+The older `model/train_scene_cache_v2.py` entrypoint also remains
 because the retained-checkpoint wrappers depend on it. MoGe3 and delta-flow are
 part of the actual exp_0 / exp_1 runs, even though their filenames lack `exp`.
 

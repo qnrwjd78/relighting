@@ -24,7 +24,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from model import infer_tokenlight as infer_core
+from model import infer as infer_core
 from scripts import infer_manifest as common
 
 

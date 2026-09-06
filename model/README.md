@@ -1,24 +1,24 @@
 # Model code for exp_0, exp_1, exp_2, and shadow_c2f
 
-The root contains 18 Python files. Their existing paths are preserved because
-trainers, inference scripts, and saved experiment commands import them directly.
+The root contains 18 Python files. Filenames use short task names. Imports, launchers, and documentation use these
+new paths; older commands must use the renamed entrypoints listed below.
 The shadow refiner is already isolated in `shadow_c2f/`.
 
 ## Where to start
 
 | Purpose | Files |
 | --- | --- |
-| exp_0 baseline / single GPU / ZeRO-3 | `train_tokenlight.py`, `train_tokenlight_single.py`, `train_tokenlight_zero3.py` |
-| exp_0 decoder and delta-flow variants | `train_tokenlight_decoder_safe.py`, `train_tokenlight_delta_flow.py` |
-| exp_0 MoGe3 point/direction variant | `train_tokenlight_moge3_pointmap.py` |
-| exp_1 scene-cache baseline / delta | `train_tokenlight_scene_cache_v2.py`, `train_tokenlight_scene_cache_v2_retained.py` |
-| exp_1 NPY pointmap | `train_tokenlight_pointmap_scene_cache_v2.py` |
-| exp_1 shadow conditioning | `train_tokenlight_scene_cache_shadow_safe_retained.py` |
-| exp_2 joint RGB / shadow | `train_tokenlight_joint_mask.py`, `tokenlight_joint_mask.py` |
+| exp_0 baseline / single GPU / ZeRO-3 | `train.py`, `train_single.py`, `train_zero3.py` |
+| exp_0 decoder and delta-flow variants | `train_decoder_safe.py`, `train_delta_flow.py` |
+| exp_0 MoGe3 point/direction variant | `train_moge3_pointmap.py` |
+| exp_1 scene-cache baseline / delta | `train_scene_cache_v2.py`, `train_scene_cache_v2_retained.py` |
+| exp_1 NPY pointmap | `train_pointmap_scene_cache_v2.py` |
+| exp_1 shadow conditioning | `train_scene_cache_shadow_safe_retained.py` |
+| exp_2 joint RGB / shadow | `train_joint_mask.py`, `joint_mask.py` |
 | shadow_c2f network / loss / geometry | `shadow_c2f/`; entrypoint: `../scripts/train_shadow_c2f.py` |
-| Shared inference / Wan weights | `infer_tokenlight.py`, `pretrain_weight.py` |
-| Shared light tokens and Wan integration | `lightoken_encoder.py`, `tokenlight_wan.py` |
-| Pointmap clean-prefix timestep helper | `tokenlight_wan_spatial.py` |
+| Shared inference / Wan weights | `infer.py`, `pretrain_weight.py` |
+| Shared light tokens and Wan integration | `light_encoder.py`, `wan.py` |
+| Pointmap clean-prefix timestep helper | `wan_spatial.py` |
 | Illumination transformations used by latent caching | `illumination_latent_head.py` |
 
 See [training configurations](../configs/train_480/README.md) and
@@ -35,12 +35,13 @@ exact duplicates. Several related files deliberately implement different contrac
 - `scene_cache_shadow_safe_retained` adds DDP-safe shadow conditioning.
 - RGB, delta-flow, decoder loss, joint-mask, and pointmap trainers implement
   different objectives or data inputs and share base modules through imports.
-- `tokenlight_wan_spatial.py` is still imported by MoGe3 for clean-prefix timestep
+- `wan_spatial.py` is still imported by MoGe3 for clean-prefix timestep
   handling; `illumination_latent_head.py` is still imported by the latent cache
   builder for image transforms. Both remain dependencies of the active workflows.
 
-Keeping these import paths avoids changing runtime monkey-patching, checkpoint
-semantics, or the training objective merely to make filenames look simpler.
+The rename preserves runtime monkey-patching, checkpoint semantics, and training
+objectives. Public CLI option names and checkpoint keys retain their established
+`tokenlight_*` spelling for compatibility with existing configs and weights.
 
 ## Archived code
 

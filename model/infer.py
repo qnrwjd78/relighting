@@ -15,7 +15,7 @@ from diffsynth.utils.data import save_video
 if __package__ is None:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from model.lightoken_encoder import (
+from model.light_encoder import (
     GLOBAL_LIGHTOKEN_NAMES,
     LIGHTOKEN_NAMES,
     PER_LIGHTOKEN_NAMES,
@@ -23,7 +23,7 @@ from model.lightoken_encoder import (
     parse_attrs_json,
 )
 from model.pretrain_weight import validate_wan22_weights, wan22_model_paths, wan22_tokenizer_path
-from model.tokenlight_wan import TokenLightTypeEmbedding, model_fn_wan_video_tokenlight
+from model.wan import TokenLightTypeEmbedding, model_fn_wan_video_tokenlight
 
 
 def parse_args() -> argparse.Namespace:

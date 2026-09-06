@@ -22,10 +22,10 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from model import train_tokenlight as base  # noqa: E402
-from model import train_tokenlight_decoder_safe as safe  # noqa: E402
-from model import train_tokenlight_delta_flow as delta  # noqa: E402
-from model.lightoken_encoder import parse_attrs_json  # noqa: E402
+from model import train as base  # noqa: E402
+from model import train_decoder_safe as safe  # noqa: E402
+from model import train_delta_flow as delta  # noqa: E402
+from model.light_encoder import parse_attrs_json  # noqa: E402
 
 
 CACHE_SCHEMA = "wan_vae_scene_latent_cache_v2"
@@ -427,7 +427,7 @@ def prepare_main(argv: list[str]) -> None:
 
 def main() -> None:
     if len(sys.argv) < 2 or sys.argv[1] not in {"prepare", "baseline", "delta"}:
-        raise SystemExit("usage: train_tokenlight_scene_cache_v2.py {prepare|baseline|delta} ...")
+        raise SystemExit("usage: train_scene_cache_v2.py {prepare|baseline|delta} ...")
     mode = sys.argv[1]
     if mode == "prepare":
         prepare_main(sys.argv[2:])

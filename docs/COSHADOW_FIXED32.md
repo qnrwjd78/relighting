@@ -2,7 +2,7 @@
 
 This is an isolated single-object adaptation of MultiShadow (formerly
 CoShadow), arXiv:2603.02743. It does not modify the successful TokenLight base
-trainer or `model/tokenlight_wan.py`.
+trainer or `model/wan.py`.
 
 ## What is preserved, and what differs
 

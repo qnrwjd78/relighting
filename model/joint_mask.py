@@ -17,8 +17,8 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
-from model.lightoken_encoder import LIGHTOKEN_NAMES, compact_attrs, parse_attrs_json
-from model.tokenlight_wan import (
+from model.light_encoder import LIGHTOKEN_NAMES, compact_attrs, parse_attrs_json
+from model.wan import (
     TokenLightTypeEmbedding,
     _repeat_to_batch,
     model_fn_wan_video_tokenlight,

@@ -16,8 +16,8 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from model import train_tokenlight as base  # noqa: E402
-from model import train_tokenlight_scene_cache_v2 as scene_cache  # noqa: E402
+from model import train as base  # noqa: E402
+from model import train_scene_cache_v2 as scene_cache  # noqa: E402
 
 
 _EPOCH_CHECKPOINT = re.compile(r"^epoch-(\d+)\.safetensors$")

@@ -65,16 +65,16 @@ except ImportError:
         )
 from diffsynth.pipelines.wan_video import ModelConfig, WanVideoPipeline
 
-from model.lightoken_encoder import LightokenEncoder, attrs_from_batch
-from model.tokenlight_wan import TokenLightTypeEmbedding, model_fn_wan_video_tokenlight
+from model.light_encoder import LightokenEncoder, attrs_from_batch
+from model.wan import TokenLightTypeEmbedding, model_fn_wan_video_tokenlight
 
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 TOKENLIGHT_DEFAULT_PROMPT = "photorealistic object relighting, preserve geometry and materials"
 DEFAULT_TRAIN_CONFIG_PATH = "configs/train_config.json"
-DEFAULT_SINGLE_TRAIN_CONFIG_PATH = "configs/train_tokenlight_single.json"
-DEFAULT_ZERO3_TRAIN_CONFIG_PATH = "configs/train_tokenlight_zero3.json"
+DEFAULT_SINGLE_TRAIN_CONFIG_PATH = "configs/train_single.json"
+DEFAULT_ZERO3_TRAIN_CONFIG_PATH = "configs/train_zero3.json"
 TRAIN_CONFIG_BY_MODE = {
     "single": DEFAULT_SINGLE_TRAIN_CONFIG_PATH,
     "zero3": DEFAULT_ZERO3_TRAIN_CONFIG_PATH,

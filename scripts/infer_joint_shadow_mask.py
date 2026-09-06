@@ -18,7 +18,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from model.tokenlight_joint_mask import LightConditionedMaskPredictor  # noqa: E402
+from model.joint_mask import LightConditionedMaskPredictor  # noqa: E402
 
 
 def resolve(path: str | Path, base: Path = ROOT) -> Path:

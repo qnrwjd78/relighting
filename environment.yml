@@ -1,4 +1,4 @@
-name: tokenlight
+name: relighting
 channels:
   - conda-forge
 dependencies:

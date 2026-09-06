@@ -55,7 +55,7 @@ if os.path.basename(sys.argv[0]) == 'python-stub':
                 config = f'configs/train_480/exp1_7x7x5_power06_rgb_shadow_mask_vae_scene64_15ep_b{batch}x8_ga1_gb{batch*8}' + ('_nogc' if nogc else '') + '.json'
                 extra = ['--expected-global-batch', '32'] if batch == 4 else []
                 self.assertEqual(preflight['args'], ['scripts/preflight_exp1_shadow_mask_training.py', '--config', config, *extra])
-                self.assertEqual(train['args'], ['launch', '--config_file', 'configs/accelerate_8gpu_ddp.yaml', 'model/train_tokenlight_scene_cache_shadow_safe_retained.py', '--config', config])
+                self.assertEqual(train['args'], ['launch', '--config_file', 'configs/accelerate_8gpu_ddp.yaml', 'model/train_scene_cache_shadow_safe_retained.py', '--config', config])
                 self.assertEqual(train['cwd'], str(self.root))
                 self.assertEqual(train['allocator'], 'expandable_segments:True' if batch == 4 else None)
 
@@ -67,8 +67,8 @@ if os.path.basename(sys.argv[0]) == 'python-stub':
                 self.assertEqual(result.returncode, 0, result.stderr)
                 preflight, train = self.calls()
                 config = f'configs/train_480/exp2_7x7x5_power06_rgb_joint_shadow_mask_clean_20ep_b5x{size}_ga{2 if size == 4 else 1}_gb40.json'
-                self.assertEqual(preflight['args'], ['model/train_tokenlight_joint_mask.py', '--config', config, '--preflight', '--preflight_max_samples', '128'])
-                self.assertEqual(train['args'], ['launch', '--config_file', f'configs/accelerate_{size}gpu_ddp.yaml', 'model/train_tokenlight_joint_mask.py', '--config', config])
+                self.assertEqual(preflight['args'], ['model/train_joint_mask.py', '--config', config, '--preflight', '--preflight_max_samples', '128'])
+                self.assertEqual(train['args'], ['launch', '--config_file', f'configs/accelerate_{size}gpu_ddp.yaml', 'model/train_joint_mask.py', '--config', config])
                 self.assertEqual(train['gpus'], devices)
 
     def test_activated_environment_executables_are_used_by_default(self):

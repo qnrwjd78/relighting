@@ -7,7 +7,7 @@ import torch
 from torch import nn
 from torch.utils.checkpoint import checkpoint
 
-from model.lightoken_encoder import LightokenEncoder
+from model.light_encoder import LightokenEncoder
 
 
 TOKENLIGHT_TYPE_SOURCE = 0

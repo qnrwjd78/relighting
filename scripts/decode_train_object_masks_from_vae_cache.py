@@ -17,7 +17,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from diffsynth.pipelines.wan_video import ModelConfig, WanVideoPipeline  # noqa: E402
-from model import train_tokenlight as base  # noqa: E402
+from model import train as base  # noqa: E402
 
 
 def main() -> int:

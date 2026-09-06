@@ -1,4 +1,4 @@
-# TokenLight: exp_0, exp_1, exp_2, and shadow_c2f
+# Relighting: exp_0, exp_1, exp_2, and shadow_c2f
 
 This checkout keeps the training entrypoints for these four experiment groups
 and the shared modules needed by their training, inference, and evaluation.
@@ -12,7 +12,7 @@ See the [script guide](scripts/README.md) for the retained tools and dependencie
   [the model guide](model/README.md).
 - `model/shadow_c2f/`: shadow refinement network, geometry, loss, and metrics.
 - `scripts/`: launchers, preprocessing, inference, and evaluation.
-- `utils/`, `tokenlight_dataset/`: shared data and evaluation utilities.
+- `utils/`, `relighting_dataset/`: shared data and evaluation utilities.
 - `configs/train_480/`: exp_0, exp_1, and exp_2 experiment configurations.
 - `tests/`: regression tests for the retained workflows.
 - `docs/`: pipeline documentation and historical experiment notes.
@@ -28,7 +28,7 @@ Use [the Conda setup guide](docs/CONDA_SETUP.md) for a new machine:
 
 ```bash
 conda env create -f environment.yml
-conda activate tokenlight
+conda activate relighting
 python -m pip install --upgrade pip setuptools wheel
 python -m pip install torch==2.6.0 torchvision==0.21.0 torchaudio==2.6.0 --index-url https://download.pytorch.org/whl/cu124
 python -m pip install -r docker/requirements.txt
@@ -48,11 +48,11 @@ and variants. Examples:
 
 ```bash
 # exp_0 baseline
-python model/train_tokenlight_single.py \
+python model/train_single.py \
   --config configs/train_480/rgb_baseline_15ep_b8_ga40.json
 
 # exp_1 RGB baseline with scene-cache sampling and retained checkpoints
-python model/train_tokenlight_scene_cache_v2_retained.py baseline \
+python model/train_scene_cache_v2_retained.py baseline \
   --config configs/train_480/exp1_7x7x5_power06_rgb_baseline_scene64_fresh_retained.json
 
 # exp_1 shadow mask / exp_2 joint RGB + shadow mask (multi-GPU)

@@ -60,7 +60,7 @@ def ensure_runtime_imports(*, include_model: bool) -> None:
         tqdm = _tqdm
 
     if include_model and LightokenEncoder is None:
-        from model.infer_tokenlight import (  # noqa: WPS433
+        from model.infer import (  # noqa: WPS433
             extract_light_state as _extract_light_state,
             extract_lora_state as _extract_lora_state,
             extract_type_state as _extract_type_state,
@@ -70,9 +70,9 @@ def ensure_runtime_imports(*, include_model: bool) -> None:
             load_pipe as _load_pipe,
             load_state as _load_state,
         )
-        from model.lightoken_encoder import LightokenEncoder as _LightokenEncoder  # noqa: WPS433
-        from model.lightoken_encoder import parse_attrs_json as _parse_attrs_json  # noqa: WPS433
-        from model.tokenlight_wan import TokenLightTypeEmbedding as _TokenLightTypeEmbedding  # noqa: WPS433
+        from model.light_encoder import LightokenEncoder as _LightokenEncoder  # noqa: WPS433
+        from model.light_encoder import parse_attrs_json as _parse_attrs_json  # noqa: WPS433
+        from model.wan import TokenLightTypeEmbedding as _TokenLightTypeEmbedding  # noqa: WPS433
 
         extract_light_state = _extract_light_state
         extract_lora_state = _extract_lora_state

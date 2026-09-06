@@ -38,9 +38,9 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from model import train_tokenlight as base  # noqa: E402
-from model import train_tokenlight_decoder_safe as safe  # noqa: E402
-from model.lightoken_encoder import parse_attrs_json  # noqa: E402
+from model import train as base  # noqa: E402
+from model import train_decoder_safe as safe  # noqa: E402
+from model.light_encoder import parse_attrs_json  # noqa: E402
 
 
 LOSS_IMPL_VERSION = "tokenlight_same_scene_delta_flow_v1"

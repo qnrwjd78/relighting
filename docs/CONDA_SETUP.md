@@ -11,7 +11,7 @@ From the cloned repository root:
 
 ```bash
 conda env create -f environment.yml
-conda activate tokenlight
+conda activate relighting
 python -m pip install --upgrade pip setuptools wheel
 python -m pip install torch==2.6.0 torchvision==0.21.0 torchaudio==2.6.0 \
   --index-url https://download.pytorch.org/whl/cu124
@@ -131,7 +131,7 @@ that does not rewrite paths stored in manifests/configurations.
 
 For MoGe precompute, the code expects `weights/moge-3-vitl/model.pt` and the
 MoGe checkout at `weights/MoGe` (revision is recorded in
-`model/train_tokenlight_moge3_pointmap.py`). Download its weight with:
+`model/train_moge3_pointmap.py`). Download its weight with:
 
 ```bash
 hf download Ruicheng/moge-3-vitl --local-dir weights/moge-3-vitl

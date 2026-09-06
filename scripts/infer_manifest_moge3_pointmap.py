@@ -90,7 +90,7 @@ def setup_pipeline(args: argparse.Namespace):
     common.ensure_runtime_imports(include_model=True)
     import torch
 
-    from model.train_tokenlight_moge3_pointmap import (
+    from model.train_moge3_pointmap import (
         MoGeStreamTypeEmbedding,
         PointMapCache,
         PointMapConditioner,
@@ -133,7 +133,7 @@ def setup_pipeline(args: argparse.Namespace):
     if not conditioner_state or not stream_type_state:
         raise ValueError(
             "Checkpoint does not contain moge_conditioner/moge_type_embedding weights; "
-            "use a checkpoint produced by train_tokenlight_moge3_pointmap.py."
+            "use a checkpoint produced by train_moge3_pointmap.py."
         )
     conditioner = PointMapConditioner(
         token_dim,
@@ -169,8 +169,8 @@ def generate_one(
     *,
     extra_masks,
 ):
-    import model.infer_tokenlight as tokenlight_infer
-    from model.train_tokenlight_moge3_pointmap import model_fn_wan_video_tokenlight_moge3
+    import model.infer as tokenlight_infer
+    from model.train_moge3_pointmap import model_fn_wan_video_tokenlight_moge3
 
     points = points.unsqueeze(0).to(device=pipe.device, dtype=pipe.torch_dtype)
     valid = valid.unsqueeze(0).to(device=pipe.device, dtype=common.torch.bool)

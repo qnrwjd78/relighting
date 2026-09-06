@@ -11,7 +11,7 @@ launch_exp1_shadow_mask() {
     --config "$experiment_config" "$@"
   exec "${ACCELERATE_BIN:-accelerate}" launch \
     --config_file configs/accelerate_8gpu_ddp.yaml \
-    model/train_tokenlight_scene_cache_shadow_safe_retained.py \
+    model/train_scene_cache_shadow_safe_retained.py \
     --config "$experiment_config"
 }
 
@@ -28,9 +28,9 @@ launch_exp2_joint_mask() {
   export CUDA_VISIBLE_DEVICES="$gpu_devices"
   export OMP_NUM_THREADS=1
   export PYTHONUNBUFFERED=1
-  "${PYTHON_BIN:-python}" model/train_tokenlight_joint_mask.py \
+  "${PYTHON_BIN:-python}" model/train_joint_mask.py \
     --config "$experiment_config" --preflight --preflight_max_samples 128
   exec "${ACCELERATE_BIN:-accelerate}" launch \
     --config_file "$accelerate_config" \
-    model/train_tokenlight_joint_mask.py --config "$experiment_config"
+    model/train_joint_mask.py --config "$experiment_config"
 }

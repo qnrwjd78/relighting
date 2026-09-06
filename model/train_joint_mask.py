@@ -27,17 +27,17 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from model import train_tokenlight as base  # noqa: E402
-from model import train_tokenlight_decoder_safe as safe  # noqa: E402
-from model import train_tokenlight_scene_cache_v2 as scene_cache  # noqa: E402
-from model.tokenlight_joint_mask import (  # noqa: E402
+from model import train as base  # noqa: E402
+from model import train_decoder_safe as safe  # noqa: E402
+from model import train_scene_cache_v2 as scene_cache  # noqa: E402
+from model.joint_mask import (  # noqa: E402
     LightConditionedMaskPredictor,
     model_fn_wan_video_tokenlight_joint_mask,
 )
-from model.train_tokenlight_scene_cache_shadow_safe_retained import (  # noqa: E402
+from model.train_scene_cache_shadow_safe_retained import (  # noqa: E402
     DistributedSceneQuotaBatchSampler,
 )
-from model.train_tokenlight_scene_cache_v2_retained import (  # noqa: E402
+from model.train_scene_cache_v2_retained import (  # noqa: E402
     OneBasedRetainedModelLogger,
 )
 

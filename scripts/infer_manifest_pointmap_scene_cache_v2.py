@@ -16,7 +16,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from model import infer_tokenlight as infer_core  # noqa: E402
+from model import infer as infer_core  # noqa: E402
 from scripts import infer_manifest as common  # noqa: E402
 from scripts import infer_manifest_moge3_pointmap as old  # noqa: E402
 from scripts.infer_manifest_scene_cache_v2 import SceneSourceLatents  # noqa: E402
@@ -37,7 +37,7 @@ def parse_args():
 
 def setup_pipeline(args):
     common.ensure_runtime_imports(include_model=True)
-    from model.train_tokenlight_moge3_pointmap import MoGeStreamTypeEmbedding, PointMapConditioner
+    from model.train_moge3_pointmap import MoGeStreamTypeEmbedding, PointMapConditioner
 
     pipe = common.load_pipe(args)
     state = common.load_state(args.checkpoint)

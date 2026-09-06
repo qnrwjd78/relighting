@@ -495,7 +495,7 @@ E_k^{prior}=\lambda_k c_k^{rgb}
 
 ### 5.5 Dense XYZ Fourier encoding은 나중에 한다
 
-현재 scalar Lightoken은 `model/lightoken_encoder.py:107-193`에서 각 scalar를 `sigma=5`, 512-feature random Gaussian Fourier로 encoding한다. 기존 checkpoint 호환을 위해 이는 유지한다.
+현재 scalar Lightoken은 `model/light_encoder.py:107-193`에서 각 scalar를 `sigma=5`, 512-feature random Gaussian Fourier로 encoding한다. 기존 checkpoint 호환을 위해 이는 유지한다.
 
 하지만 같은 고주파 random encoding을 noisy MoGe XYZ에 그대로 적용하는 것은 첫 실험으로 권하지 않는다.
 
@@ -544,11 +544,11 @@ light scalar tokens     [B, 19, 3072]   # max_lights=2
 baseline sequence       469 tokens
 ```
 
-현재 source insertion 위치는 `model/tokenlight_wan.py:191-195`다.
+현재 source insertion 위치는 `model/wan.py:191-195`다.
 
 ### 6.2 기존 spatial-prefix는 smoke test로 사용 가능
 
-`model/tokenlight_wan_spatial.py:60-186`에 이미 dense map용 `SpatialConditionEncoder`가 있고, `:385-401`에서 225개의 spatial prefix token을 append한다. 이 경로를 `moge` condition kind로 확장하면 전용 VAE 없이 빠른 smoke test가 가능하다.
+`model/wan_spatial.py:60-186`에 이미 dense map용 `SpatialConditionEncoder`가 있고, `:385-401`에서 225개의 spatial prefix token을 append한다. 이 경로를 `moge` condition kind로 확장하면 전용 VAE 없이 빠른 smoke test가 가능하다.
 
 다만 token append는 self-attention 비용을 크게 늘린다.
 
@@ -1061,9 +1061,9 @@ MoGe point map은 image pixel마다 visible surface를 나타내는 sparse shell
 
 - `model/physical_tasks/data.py:105-136`: right-forward-up ray, point/light relation 재구성
 - `scripts/build_final_objaverse_light_mask_infer_manifest.py:151-166`: canonical light position을 attrs로 변환
-- `model/lightoken_encoder.py:107-193`: 기존 scalar Gaussian Fourier encoding
-- `model/tokenlight_wan.py:183-216`: target/source/light token 구성
-- `model/tokenlight_wan_spatial.py:60-186`: 기존 dense spatial CNN encoder
-- `model/tokenlight_wan_spatial.py:385-401`: 기존 spatial-prefix append 방식
+- `model/light_encoder.py:107-193`: 기존 scalar Gaussian Fourier encoding
+- `model/wan.py:183-216`: target/source/light token 구성
+- `model/wan_spatial.py:60-186`: 기존 dense spatial CNN encoder
+- `model/wan_spatial.py:385-401`: 기존 spatial-prefix append 방식
 - `model/train_tokenlight_spatial_safe.py:554-578`: spatial input/dropout wiring
 - `data/unseen_fixed32_random2_png/scenes/scene_002502/meta.json`: canonical camera, similarity transform, canonical lights

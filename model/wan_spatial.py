@@ -2,7 +2,7 @@ from __future__ import annotations
 
 """Spatial-prefix extensions for TokenLight's Wan model function.
 
-This module is intentionally isolated from :mod:`model.tokenlight_wan`.  The
+This module is intentionally isolated from :mod:`model.wan`.  The
 original source/mask/light/target prefix behavior is preserved, while a small
 CNN converts camera-aligned physical maps into one token per Wan spatial patch.
 """
@@ -13,9 +13,9 @@ from typing import Any
 import torch
 from torch import nn
 
-from model.lightoken_encoder import LightokenEncoder
-from model.tokenlight_wan import TokenLightTypeEmbedding
-from model import tokenlight_wan as legacy
+from model.light_encoder import LightokenEncoder
+from model.wan import TokenLightTypeEmbedding
+from model import wan as legacy
 
 
 SPATIAL_PREFIX_TYPE_CONDITION = 0

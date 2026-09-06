@@ -276,13 +276,13 @@ if len(sys.argv) > 1 and sys.argv[1] == "precompute":
     raise SystemExit(0)
 
 
-from model import tokenlight_wan as legacy  # noqa: E402
-from model import train_tokenlight as base  # noqa: E402
-from model import train_tokenlight_decoder_safe as safe  # noqa: E402
-from model import train_tokenlight_delta_flow as delta  # noqa: E402
-from model.lightoken_encoder import LightokenEncoder, parse_attrs_json  # noqa: E402
-from model.tokenlight_wan import TokenLightTypeEmbedding  # noqa: E402
-from model.tokenlight_wan_spatial import _promote_clean_prefix_t_mod  # noqa: E402
+from model import wan as legacy  # noqa: E402
+from model import train as base  # noqa: E402
+from model import train_decoder_safe as safe  # noqa: E402
+from model import train_delta_flow as delta  # noqa: E402
+from model.light_encoder import LightokenEncoder, parse_attrs_json  # noqa: E402
+from model.wan import TokenLightTypeEmbedding  # noqa: E402
+from model.wan_spatial import _promote_clean_prefix_t_mod  # noqa: E402
 
 
 class PointMapCache:
@@ -1082,7 +1082,7 @@ def train_main(argv: Sequence[str]) -> None:
 def main() -> None:
     if len(sys.argv) < 2 or sys.argv[1] in {"-h", "--help"}:
         print(
-            "usage: train_tokenlight_moge3_pointmap.py {precompute|verify-cache|train} ...\n"
+            "usage: train_moge3_pointmap.py {precompute|verify-cache|train} ...\n"
             "  precompute    cache MoGe-3 points_cv + valid with torchrun\n"
             "  verify-cache validate cache coverage and shapes\n"
             "  train         TokenLight point/direction streams + delta-flow lambda=0.2"

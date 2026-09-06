@@ -70,7 +70,7 @@ CoShadow는 box predictor와 diffusion을 따로 학습하므로, 실제 학습 
 - 네 Wan 기반 학습은 기본적으로 **latent rectified-flow velocity loss만** 사용한다.
 - RGB decoder image loss는 모두 `0`이다.
 - 매 학습 iteration에서 전체 inference trajectory를 끝까지 unroll하지 않는다.
-- 기존 `model/train_tokenlight.py`와 기존 PBR/추론 파일은 수정하지 않았다.
+- 기존 `model/train.py`와 기존 PBR/추론 파일은 수정하지 않았다.
 - 새 기능은 별도 trainer/model/config/wrapper 파일로 추가했다.
 - single GPU에서는 FP32 trainable parameter와 BF16 autocast를 사용한다.
 - ZeRO-3에서는 DeepSpeed가 low-precision shard와 FP32 master state를 관리한다.
@@ -119,7 +119,7 @@ CoShadow/MultiShadow:
 
 LGI 및 GT-mask 공통 spatial 경로:
 
-- `model/tokenlight_wan_spatial.py`
+- `model/wan_spatial.py`
 - `model/train_tokenlight_spatial_safe.py`
 - `model/train_tokenlight_lgi.py`
 - `model/train_tokenlight_gt_masks.py`
@@ -133,7 +133,7 @@ LGI 및 GT-mask 공통 spatial 경로:
 
 decoder 안정화 관련 별도 신규 경로도 존재한다.
 
-- `model/train_tokenlight_decoder_safe.py`
+- `model/train_decoder_safe.py`
 - `model/decoder_space_loss.py`
 
 다만 네 물리 조건부 기본 config는 이 decoder loss를 사용하지 않는다.
@@ -428,7 +428,7 @@ backpropagate해야 한다. 5B DiT에서 40~50 step을 그대로 unroll하면 �
 
 ### 5.3 별도 safe decoder trainer의 현재 objective
 
-`model/train_tokenlight_decoder_safe.py`는 기존 baseline을 건드리지 않는 opt-in
+`model/train_decoder_safe.py`는 기존 baseline을 건드리지 않는 opt-in
 실험이다. 현재 구현 version은 `tokenlight_decoder_current_t_v3`이고 다음을 비교한다.
 
 ```text
@@ -1745,7 +1745,7 @@ GT direct/shadow는 target geometry와 target light의 답을 거의 직접 제�
 LGI와 GT mask는 thin entrypoint만 다르고 아래 공통 구현을 사용한다.
 
 ```text
-model/tokenlight_wan_spatial.py
+model/wan_spatial.py
 model/train_tokenlight_spatial_safe.py
 ```
 
@@ -1814,7 +1814,7 @@ LGI encoder는 4-channel 첫 conv, GT encoder는 2-channel 첫 conv이므로 두
 
 ### 11.1 single GPU에서 BF16 parameter AdamW가 위험했던 이유
 
-과거 direct `python model/train_tokenlight_single.py` 실행은
+과거 direct `python model/train_single.py` 실행은
 `configs/accelerate_single_gpu.yaml`을 읽지 않았다. Accelerator에 mixed precision을
 명시하지 않으면 runtime은 `mixed_precision=no`인데, 코드가 trainable parameter를
 pipeline dtype인 BF16로 바꾸고 일반 AdamW를 붙일 수 있었다.
@@ -2224,7 +2224,7 @@ resolved runtime상:
 
 ```text
 ImportError: cannot import name '_constructor_resume_checkpoint'
-             from model.train_tokenlight
+             from model.train
 ```
 
 따라서 앞으로 depth-normal PBR은 새 safe entrypoint를 사용한다.
@@ -2366,7 +2366,7 @@ host에서 직접 Python 학습/검증을 실행하지 않았다.
 - 신규 Python 전체 `py_compile` 통과
 - PBR/LGI/GT/CoShadow entrypoint `--help` 및 config parse 통과
 - JSON config 5개 parse 통과
-- 기존 canonical `model/train_tokenlight.py` diff 없음
+- 기존 canonical `model/train.py` diff 없음
 - 기존 `model/tokenlight_wan_pbr.py` diff 없음
 
 ### 16.2 PBR preflight

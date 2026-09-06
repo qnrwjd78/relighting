@@ -2,7 +2,7 @@ from __future__ import annotations
 
 """Stable opt-in decoder-space training for TokenLight.
 
-This entrypoint intentionally leaves ``model/train_tokenlight.py`` untouched.
+This entrypoint intentionally leaves ``model/train.py`` untouched.
 When the decoder weight is zero it delegates to DiffSynth's original
 ``FlowMatchSFTLoss``.  The decoder-on path compares decoded flow states at the
 sampled timestep and uses a single-GPU-safe FP32 optimizer path.
@@ -29,7 +29,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from model import train_tokenlight as base  # noqa: E402
+from model import train as base  # noqa: E402
 
 
 LOSS_IMPL_VERSION = "tokenlight_decoder_current_t_v3"

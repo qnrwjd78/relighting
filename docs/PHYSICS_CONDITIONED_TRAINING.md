@@ -7,7 +7,7 @@
 3. LGI(Light-Geometry Interaction) map 조건부 생성
 4. 정답 direct-lit/cast-shadow mask를 넣는 oracle 진단 실험(object mask는 검증 전용)
 
-중요한 전제는 이 네 구현이 논문 코드를 그대로 옮긴 **exact reproduction이 아니라**, 현재 Wan 2.2 5B + TokenLight + rectified-flow 학습 체계에 맞춘 연구용 adaptation이라는 점이다. 논문과 동일한 부분과 바꾼 부분을 아래에서 분리해 적는다. 기존 latent-only 기준 구현인 `model/train_tokenlight.py`는 건드리지 않고 별도 entrypoint를 사용한다.
+중요한 전제는 이 네 구현이 논문 코드를 그대로 옮긴 **exact reproduction이 아니라**, 현재 Wan 2.2 5B + TokenLight + rectified-flow 학습 체계에 맞춘 연구용 adaptation이라는 점이다. 논문과 동일한 부분과 바꾼 부분을 아래에서 분리해 적는다. 기존 latent-only 기준 구현인 `model/train.py`는 건드리지 않고 별도 entrypoint를 사용한다.
 
 네 신규 trainer가 공유하는 안전 실행 루프도 새 파일
 `model/tokenlight_physics_runtime.py`에 분리했다. Single GPU에서는 FP32
@@ -388,7 +388,7 @@ z1_hat = z(t) + (1-t)*v_theta
 
 관련 파일:
 
-- shared dense-map encoder/trainer: `model/tokenlight_wan_spatial.py`, `model/train_tokenlight_spatial_safe.py`
+- shared dense-map encoder/trainer: `model/wan_spatial.py`, `model/train_tokenlight_spatial_safe.py`
 - entrypoint: `model/train_tokenlight_lgi.py`
 - config: `configs/train_480/rgb_spatial_lgi.json`
 
@@ -470,7 +470,7 @@ object mask는 shared `masks/object_mask.png`에서 읽지만 encoder condition�
 관련 파일:
 
 - entrypoint: `model/train_tokenlight_gt_masks.py`
-- shared implementation: `model/train_tokenlight_spatial_safe.py`, `model/tokenlight_wan_spatial.py`
+- shared implementation: `model/train_tokenlight_spatial_safe.py`, `model/wan_spatial.py`
 - config: `configs/train_480/rgb_spatial_gt_masks.json`
 
 scene 하나의 32개 position을 점검하면 `position_002`도 포함된다.

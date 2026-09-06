@@ -6,17 +6,17 @@ four groups remain in place; see the [script guide](../scripts/README.md).
 
 ## Retained entrypoints
 
-- exp_0: `train_tokenlight_single.py`, `train_tokenlight_zero3.py`,
-  `train_tokenlight_decoder_safe.py`, `train_tokenlight_delta_flow.py`,
-  and `train_tokenlight_moge3_pointmap.py` (under `model/`).
-- exp_1: `model/train_tokenlight_scene_cache_v2_retained.py` (baseline/delta),
-  `model/train_tokenlight_pointmap_scene_cache_v2.py`, and
-  `model/train_tokenlight_scene_cache_shadow_safe_retained.py`.
-- exp_2: `model/train_tokenlight_joint_mask.py` and its existing launchers.
+- exp_0: `train_single.py`, `train_zero3.py`,
+  `train_decoder_safe.py`, `train_delta_flow.py`,
+  and `train_moge3_pointmap.py` (under `model/`).
+- exp_1: `model/train_scene_cache_v2_retained.py` (baseline/delta),
+  `model/train_pointmap_scene_cache_v2.py`, and
+  `model/train_scene_cache_shadow_safe_retained.py`.
+- exp_2: `model/train_joint_mask.py` and its existing launchers.
 - shadow_c2f: `scripts/train_shadow_c2f.py`, `model/shadow_c2f/`, and the
   existing pipeline, inference, cache, and evaluation tools.
-- Shared training implementations `model/train_tokenlight.py` and
-  `model/train_tokenlight_scene_cache_v2.py` are required by these entrypoints.
+- Shared training implementations `model/train.py` and
+  `model/train_scene_cache_v2.py` are required by these entrypoints.
 
 MoGe3 / pointmap and delta-flow are present in the local exp_0 / exp_1 run
 records and must not be classified as unrelated merely by filename. The original
@@ -114,3 +114,20 @@ were moved intact to `local_archive/model_cleanup/model/`. No retained model
 implementation changed. Repeated shell launch sequences now live in
 `scripts/lib/training_launch.sh`, with original wrapper paths and experiment
 settings preserved. The same archive holds the original launcher scripts.
+
+## Public filename cleanup
+
+Active model filenames now omit `tokenlight`: e.g. `model/train.py`,
+`model/train_joint_mask.py`, `model/infer.py`, and `model/wan.py`.
+`model/lightoken_encoder.py` became `model/light_encoder.py`;
+`tokenlight_dataset/` became `relighting_dataset/`. The geometry design document
+is now `MOGE3_SPATIAL_GEOMETRY_DESIGN.md`. Import references, launch commands,
+and current documentation were updated together. The Conda environment is named
+`relighting`.
+
+Before/after paths and original-file digests are recorded in
+`local_archive/filename_cleanup/rename-map.json` and `manifest.json`. Archived
+snapshots retain their original names and contents. Existing CLI options, model
+class names, checkpoint keys, cache schema identifiers, and data paths keep their
+previous spelling so old datasets and trained weights remain compatible. Old
+external shell commands that name a renamed Python file must use its new path.
