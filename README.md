@@ -1,214 +1,92 @@
-# TokenLight Reprod Wan2.2 Baseline
+# TokenLight: exp_0, exp_1, exp_2, and shadow_c2f
 
-This folder keeps the official DiffSynth-Studio Wan2.2-TI2V-5B baseline and
-adds separate TokenLight conditioning entrypoints.
+This checkout keeps the training entrypoints for these four experiment groups
+and the shared modules needed by their training, inference, and evaluation.
+Other training code is stored locally in `local_archive/other_training/`.
+Unrelated scripts are stored in `local_archive/other_scripts/`. Git ignores both.
+See the [script guide](scripts/README.md) for the retained tools and dependencies.
 
 ## Layout
 
-```text
-model/               baseline, TokenLight, physical tasks, and shadow models
-scripts/             training, inference, preprocessing, and evaluation tools
-utils/               shared data, geometry, and evaluation helpers
-tokenlight_dataset/  EXR loading and tone mapping
-configs/             Accelerate / DeepSpeed and experiment configurations
-tests/               regression tests
-docs/                experiment and pipeline documentation
-docker/              CUDA image and Python dependencies
-data/, data_train/   local datasets and manifests (not committed)
-weights/, outputs/   local model weights and results (not committed)
-repos/, external/    local third-party checkouts / packages (not committed)
-```
+- `model/`: retained TokenLight trainers and shared model components; see
+  [the model guide](model/README.md).
+- `model/shadow_c2f/`: shadow refinement network, geometry, loss, and metrics.
+- `scripts/`: launchers, preprocessing, inference, and evaluation.
+- `utils/`, `tokenlight_dataset/`: shared data and evaluation utilities.
+- `configs/train_480/`: exp_0, exp_1, and exp_2 experiment configurations.
+- `tests/`: regression tests for the retained workflows.
+- `docs/`: pipeline documentation and historical experiment notes.
+- `docker/`: CUDA image and dependency definition.
 
-See [repository contents and publishing notes](docs/REPOSITORY.md) for the
-Git exclusion policy and local dependencies. Experiment configurations refer to
-local datasets, caches, and checkpoints; update these paths before running on a
-new machine. Some comparison scripts expect this checkout at `/workspace`.
+Datasets, weights, caches, outputs, environments, third-party checkouts, and the
+local archive are excluded from Git. See [repository notes](docs/REPOSITORY.md)
+and [retained training scope](docs/TRAINING_SCOPE.md).
 
-## Docker
+## Environment
 
-Build from this folder:
+Use [the Conda setup guide](docs/CONDA_SETUP.md) for a new machine:
 
 ```bash
-docker build -f docker/Dockerfile -t tokenlight-reprod .
+conda env create -f environment.yml
+conda activate tokenlight
+python -m pip install --upgrade pip setuptools wheel
+python -m pip install torch==2.6.0 torchvision==0.21.0 torchaudio==2.6.0 --index-url https://download.pytorch.org/whl/cu124
+python -m pip install -r docker/requirements.txt
+bash scripts/download_weights.sh --only wan
 ```
 
-Run with the mounted workspace:
+The requirements file is shared with the optional Docker image; Conda setup
+requires no Docker. Connect your existing data and manifest directories and
+prepare any missing caches. Some experiment paths still assume `/workspace`.
+The setup guide distinguishes official base weights from your own trained
+checkpoints and lists the optional shadow_c2f dependencies.
+
+## Training
+
+See [the configuration guide](configs/train_480/README.md) for the entrypoints
+and variants. Examples:
 
 ```bash
-docker run -it --ipc=host --name tokenlight-reprod \
-  -v ${PWD}:/workspace --gpus all tokenlight-reprod bash
+# exp_0 baseline
+python model/train_tokenlight_single.py \
+  --config configs/train_480/rgb_baseline_15ep_b8_ga40.json
+
+# exp_1 RGB baseline with scene-cache sampling and retained checkpoints
+python model/train_tokenlight_scene_cache_v2_retained.py baseline \
+  --config configs/train_480/exp1_7x7x5_power06_rgb_baseline_scene64_fresh_retained.json
+
+# exp_1 shadow mask / exp_2 joint RGB + shadow mask (multi-GPU)
+bash scripts/launch_exp1_shadow_mask_8gpu.sh
+bash scripts/launch_exp2_joint_rgb_shadow_mask_4gpu.sh
+
+# shadow_c2f: inspect required training inputs and preview the pipeline
+python scripts/train_shadow_c2f.py --help
+bash scripts/run_shadow_c2f_pipeline.sh --stage all --dry-run
 ```
 
-## LoRA Train
+The exp_2 resume launcher requires the exact checkpoint configured in its JSON.
+See [the shadow pipeline contract](docs/SHADOW_C2F_PIPELINE.md) for external
+models, cache preparation, training, and inference prerequisites.
 
-The default command follows the official DiffSynth Wan2.2-TI2V-5B LoRA example,
-but loads local weights from:
-
-```text
-weights/Wan2.2-TI2V-5B
-```
-
-Put the DiffSynth example dataset under:
-
-```text
-data/diffsynth_example_dataset/wanvideo/Wan2.2-TI2V-5B
-```
-
-The baseline training entrypoint is:
-
-```text
-model/train.py
-```
-
-The official DiffSynth inference example is preserved as:
-
-```text
-model/infer_official.py
-```
-
-Inspect the baseline arguments after installing the dependencies:
+## Inference and evaluation
 
 ```bash
-python model/train.py --help
+python scripts/infer_exp0.py --help
+python scripts/infer_manifest_scene_cache_v2.py --scene-cache-root data/vae_cache_480 --help
+python scripts/infer_joint_shadow_mask.py --help
+python scripts/infer_shadow_c2f.py --help
 ```
 
-For TokenLight training with single GPU or ZeRO-3, use the entrypoints and
-experiment configurations in [TokenLight Train](#tokenlight-train) below.
+Shared inference components required by these experiments are kept. Unrelated
+PBR, CoShadow, LGI, GT-mask, GenLit, and LiveLight scripts are archived. The
+shadow_c2f AdapterShadow and online FOCUS paths remain available.
 
-## Inference
-
-Text-to-video:
+## Verification
 
 ```bash
-python model/infer.py \
-  --prompt "Two cute cats wearing boxing gloves fight on a boxing ring."
+OMP_NUM_THREADS=2 CUDA_VISIBLE_DEVICES='' python -m unittest discover -s tests -v
 ```
 
-Image-to-video:
-
-```bash
-python model/infer.py \
-  --input_image data/input.png \
-  --prompt "Two cute cats wearing boxing gloves fight on a boxing ring."
-```
-
-## TokenLight Metadata
-
-TokenLight training metadata should contain these columns:
-
-```text
-video,input_image,mask,prompt,attrs_json
-```
-
-Meanings:
-
-```text
-video       target relit image/video
-input_image source image
-mask        optional relighting/object/fixture mask
-prompt      fixed generic text prompt
-attrs_json  numeric light condition JSON
-```
-
-Example `attrs_json`:
-
-```json
-{"a":0.014,"x":0.2,"y":-0.4,"z":0.8,"r":1.0,"g":1.0,"b":1.0,"lambda":1.2,"d":0.06}
-```
-
-## TokenLight Train
-
-TokenLight training uses source/mask/light prefix tokens before the noisy Wan
-target tokens. Text prompt stays fixed; CFG/dropout is applied only to light
-tokens.
-
-All 480 training configurations are under `configs/train_480/`:
-
-| Experiment | RGB entrypoint | PBR entrypoint | Config |
-| --- | --- | --- | --- |
-| RGB latent loss | yes | no | `rgb.json` |
-| PBR latent loss | no | yes | `pbr.json` |
-| RGB decoder loss | yes | no | `rgb_decoder.json` |
-| PBR decoder loss | no | yes | `pbr_decoder.json` |
-
-Single GPU uses the `*_single.py` entrypoint:
-
-```bash
-python model/train_tokenlight_single.py --config configs/train_480/rgb.json
-python model/train_tokenlight_pbr_single.py --config configs/train_480/pbr.json
-```
-
-ZeRO-3 uses the matching `*_zero3.py` entrypoint and the same experiment config:
-
-```bash
-accelerate launch --config_file configs/accelerate_zero3.yaml \
-  model/train_tokenlight_zero3.py --config configs/train_480/rgb.json
-accelerate launch --config_file configs/accelerate_zero3.yaml \
-  model/train_tokenlight_pbr_zero3.py --config configs/train_480/pbr.json
-```
-
-Replace the config filename with `rgb_decoder.json` or `pbr_decoder.json` for
-decoder-space training. The latent/PBR configs use the 480 all-sets metadata and
-scene cache. `rgb_decoder.json` instead uses the fixed32 dataset with
-precomputed RGB VAE latents and shadow/direct masked RGB decoder losses. The PBR
-pair uses depth and normal maps.
-
-### Decoder-space loss
-
-The opt-in decoder loss reconstructs the predicted clean latent as
-`x0 = noise - velocity`, runs both prediction and target through the frozen Wan
-VAE decoder, and computes the loss in decoded image space. Existing configs keep
-the original latent velocity MSE.
-
-RGB-only decoder loss:
-
-```bash
-accelerate launch --config_file configs/accelerate_zero3.yaml \
-  model/train_tokenlight_zero3.py --config configs/train_480/rgb_decoder.json
-```
-
-Joint RGB + PBR decoder loss:
-
-```bash
-accelerate launch --config_file configs/accelerate_zero3.yaml \
-  model/train_tokenlight_pbr_zero3.py --config configs/train_480/pbr_decoder.json
-```
-
-The relevant config keys are:
-
-```json
-{
-  "tokenlight_rgb_latent_loss_weight": 0.0,
-  "tokenlight_rgb_decoder_loss_weight": 1.0,
-  "tokenlight_rgb_decoder_transform": "rgb",
-  "tokenlight_pbr_latent_loss_weight": 0.0,
-  "tokenlight_pbr_decoder_loss_weight": 1.0,
-  "tokenlight_pbr_decoder_transforms": "shading:illuminance,depth:illuminance,normal:rgb",
-  "tokenlight_decoder_loss_type": "mse"
-}
-```
-
-`illuminance` is accepted as an alias of the Rec.709 luminance proxy used by
-this repository. It is appropriate for RGB lighting/shading outputs. Keep
-vector-valued normal maps in `rgb`; depth-to-luminance only treats the encoded
-grayscale depth image as a scalar and is not a physical PBR renderer.
-Set both latent and decoder weights above zero for a hybrid objective. Decoder
-loss requires substantially more VRAM and compute because the VAE decoder stays
-in the autograd graph for the prediction branch.
-
-## TokenLight Inference
-
-```bash
-python model/infer_tokenlight.py \
-  --source data/source.png \
-  --attrs '{"a":0.014,"x":0.2,"y":-0.4,"z":0.8,"r":1.0,"g":1.0,"b":1.0,"lambda":1.2,"d":0.06}' \
-  --checkpoint model/train/tokenlight_wan22_lora/step-100.safetensors \
-  --cfg_scale 2.0 \
-  --output outputs/tokenlight.png
-```
-
-## Lightoken Encoder
-
-`model/lightoken_encoder.py` contains a standalone TokenLight-style numeric
-light encoder using Gaussian Fourier features plus one projection layer per
-attribute.
+Historical documents may mention archived training paths. Those commands require
+restoring the corresponding files from the local archive first; they are outside
+the supported training scope of this checkout.

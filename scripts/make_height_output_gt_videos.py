@@ -6,16 +6,18 @@ from __future__ import annotations
 import argparse
 import json
 import subprocess
+import sys
 import tempfile
 from collections import defaultdict
 from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFont
 
-from utils.make_5panel import transform_image
-
-
 ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from utils.make_5panel import transform_image
 
 
 def resolve(value: str | Path) -> Path:

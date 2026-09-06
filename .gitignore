@@ -39,6 +39,7 @@ htmlcov/
 /.conda_pkgs/
 /.pip_cache/
 /.codex_tmp/
+/local_archive/
 
 # Third-party checkouts and installed packages (see docs/REPOSITORY.md)
 /repos/

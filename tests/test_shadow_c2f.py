@@ -250,11 +250,10 @@ class ShadowCoarseToFineTests(unittest.TestCase):
             fine_channels=4,
             fine_blocks=1,
             use_receiver_mask=True,
-            adapter_feature_channels=3,
+            adapter_feature_channels=1,
         )
         model = ShadowCoarseToFine(config)
-        self.assertEqual(model.coarse_network.stem.body[0].in_channels, 12)
-        self.assertEqual(model.fine_network.body[0].body[0].in_channels, 15)
+        self.assertEqual(model.stem.body[0].in_channels, 8)
         image = torch.rand(2, 3, 16, 20)
         object_mask = (torch.rand(2, 1, 16, 20) > 0.8).float()
         receiver_mask = 1.0 - object_mask
@@ -274,7 +273,7 @@ class ShadowCoarseToFineTests(unittest.TestCase):
             receiver_mask=receiver_mask,
             adapter_features=adapter_features,
         )
-        self.assertEqual(tuple(outputs["coarse_logits"].shape), (2, 1, 8, 8))
+        self.assertEqual(tuple(outputs["coarse_logits"].shape), (2, 1, 16, 20))
         self.assertEqual(tuple(outputs["logits"].shape), (2, 1, 16, 20))
         self.assertEqual(tuple(outputs["mask"].shape), (2, 1, 16, 20))
         self.assertEqual(tuple(outputs["receiver_masked_mask"].shape), (2, 1, 16, 20))
@@ -293,17 +292,13 @@ class ShadowCoarseToFineTests(unittest.TestCase):
             "fine_loss",
             "fine_bce",
             "fine_dice",
-            "coarse_loss",
-            "coarse_bce",
-            "coarse_dice",
         })
         total.backward()
-        self.assertIsNotNone(model.coarse_network.head.weight.grad)
-        self.assertIsNotNone(model.fine_network.head.weight.grad)
-        self.assertTrue(bool(torch.isfinite(model.coarse_network.head.weight.grad).all()))
-        self.assertTrue(bool(torch.isfinite(model.fine_network.head.weight.grad).all()))
+        self.assertIsNotNone(model.head.weight.grad)
+        self.assertTrue(bool(torch.isfinite(model.head.weight.grad).all()))
+        self.assertGreater(float(model.head.weight.grad.abs().sum()), 0.0)
 
-    def test_adapter_features_can_fall_back_to_zero(self):
+    def test_zero_delta_prior_is_accepted(self):
         model = ShadowCoarseToFine(
             ShadowC2FConfig(
                 coarse_size=(4, 4),
@@ -311,7 +306,7 @@ class ShadowCoarseToFineTests(unittest.TestCase):
                 fine_channels=4,
                 fine_blocks=1,
                 use_receiver_mask=True,
-                adapter_feature_channels=3,
+                adapter_feature_channels=1,
             )
         )
         outputs = model(
@@ -341,6 +336,9 @@ class ShadowCoarseToFineTests(unittest.TestCase):
         )
         receiver = torch.ones(1, 1, 8, 8)
         prior = torch.zeros(1, 1, 4, 4)
+        # The head is zero-initialized; emulate a trained head to test whether
+        # exact light distance can affect the predicted residual.
+        torch.nn.init.normal_(model.head.weight, std=0.02)
         with torch.no_grad():
             near = model(
                 *common,
@@ -355,7 +353,7 @@ class ShadowCoarseToFineTests(unittest.TestCase):
                 receiver_mask=receiver,
             )["coarse_logits"]
         self.assertFalse(torch.equal(near, far))
-        with self.assertRaisesRegex(ValueError, "non-finite"):
+        with self.assertRaisesRegex(ValueError, "must be finite"):
             model(
                 *common,
                 torch.tensor([float("nan"), 0.0, 1.0]),
@@ -383,7 +381,7 @@ class ShadowCoarseToFineTests(unittest.TestCase):
                 fine_channels=4,
                 fine_blocks=1,
                 use_receiver_mask=True,
-                adapter_feature_channels=3,
+                adapter_feature_channels=1,
             )
         ).eval()
         image = torch.zeros(1, 3, 8, 8)
@@ -393,7 +391,7 @@ class ShadowCoarseToFineTests(unittest.TestCase):
         light = torch.tensor([0.0, -1.0, 0.0])
         prior = torch.zeros(1, 1, 4, 4)
         probability = torch.rand(1, 1, 8, 8)
-        expanded_alias = torch.cat((probability, torch.zeros(1, 2, 8, 8)), dim=1)
+        expanded_alias = build_adapter_features(probability, torch.zeros_like(probability))
         with torch.no_grad():
             alias_output = model(
                 image,
@@ -433,7 +431,7 @@ class ShadowCoarseToFineTests(unittest.TestCase):
                 torch.zeros(1, 1, 4, 4),
             )
 
-    def test_receiver_and_adapter_channels_are_configurable(self):
+    def test_receiver_gating_is_optional_but_delta_channel_is_required(self):
         model = ShadowCoarseToFine(
             ShadowC2FConfig(
                 coarse_size=(4, 4),
@@ -441,11 +439,13 @@ class ShadowCoarseToFineTests(unittest.TestCase):
                 fine_channels=4,
                 fine_blocks=1,
                 use_receiver_mask=False,
-                adapter_feature_channels=0,
+                adapter_feature_channels=1,
             )
         )
-        self.assertEqual(model.coarse_network.stem.body[0].in_channels, 8)
-        self.assertEqual(model.fine_network.body[0].body[0].in_channels, 11)
+        self.assertEqual(model.stem.body[0].in_channels, 8)
+        for channels in (0, 3):
+            with self.assertRaisesRegex(ValueError, "one Adapter positive-delta channel"):
+                ShadowC2FConfig(adapter_feature_channels=channels)
         outputs = model(
             torch.zeros(1, 3, 8, 8),
             torch.zeros(1, 1, 8, 8),

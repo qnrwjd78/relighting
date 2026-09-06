@@ -30,6 +30,7 @@ librosa
 soundfile
 tqdm
 pillow
+matplotlib
 scipy
 lpips
 # AdapterShadow's published preprocessing uses cv2.resize.

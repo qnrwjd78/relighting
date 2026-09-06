@@ -1,0 +1,11 @@
+name: tokenlight
+channels:
+  - conda-forge
+dependencies:
+  - python=3.10
+  - pip
+  - ffmpeg<8
+  - ninja
+  - cxx-compiler
+  - pkg-config
+# Install CUDA PyTorch first, then docker/requirements.txt; see docs/CONDA_SETUP.md.

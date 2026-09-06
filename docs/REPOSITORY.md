@@ -1,7 +1,9 @@
 # Repository contents and GitHub preparation
 
-This repository contains TokenLight / Wan training and inference code, physical
-tasks, shadow refinement tools, experiment configurations, and documentation.
+This repository contains TokenLight / Wan training and inference code
+and shadow refinement tools, experiment configurations, and documentation.
+Training is limited to exp_0, exp_1, exp_2, and shadow_c2f; see
+[training scope and local archive](TRAINING_SCOPE.md).
 Run commands from the repository root. Many experiment paths assume `/workspace`;
 the Docker workspace mount in the main README matches that layout.
 
@@ -17,7 +19,7 @@ the Docker workspace mount in the main README matches that layout.
 `.gitignore` keeps datasets, manifests under `data_train/`, weights, downloaded
 tokenizers under `model/Wan-AI/`, checkpoints, results, Conda installations,
 package caches, third-party checkouts, credentials, and temporary files local.
-These rules do not delete files. Model binaries, NumPy caches, archives, and
+`local_archive/` stores excluded training experiments and unrelated scripts. These rules do not delete files. Model binaries, NumPy caches, archives, and
 generated videos are excluded by extension as well.
 
 `.dockerignore` limits the build context to the Dockerfile and its dependency
@@ -46,10 +48,10 @@ that every experiment has been validated with them.
 Clone the dependencies needed for your experiment into those paths and check out
 the listed revisions. Each dependency and model retains its upstream license.
 `external/python_pkgs/` contains local installed packages and is also excluded.
-See `scripts/setup_livelight.sh`, `scripts/setup_genlit.sh`, and
-[the shadow pipeline documentation](SHADOW_C2F_PIPELINE.md) for setup details.
-The GenLit setup script expects its repository and a local Conda installation to
-exist already.
+See [the shadow pipeline documentation](SHADOW_C2F_PIPELINE.md) for active setup
+details. GenLit and LiveLight comparison scripts, including their setup scripts,
+now live in `local_archive/other_scripts/scripts/` and are not published. The
+revision and patch records below retain their provenance for local restoration.
 
 LiveLight and FOCUS had local changes to tracked files. These are preserved in
 `patches/livelight-local.patch` (per-frame light trajectories) and
@@ -84,7 +86,6 @@ from the current working tree.
 ## Further documentation
 
 - [480px experiment configurations](../configs/train_480/README.md)
-- [Physical tasks](../model/physical_tasks/README.md)
 - [CoShadow fixed32](COSHADOW_FIXED32.md)
 - [Physics-conditioned training](PHYSICS_CONDITIONED_TRAINING.md)
 - [Shadow refinement pipeline](SHADOW_C2F_PIPELINE.md)

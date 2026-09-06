@@ -1,18 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-cd /workspace
+source "$(dirname -- "${BASH_SOURCE[0]}")/lib/training_launch.sh"
 
-export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
-export OMP_NUM_THREADS=1
-export PYTHONUNBUFFERED=1
-
-/usr/bin/python3 model/train_tokenlight_joint_mask.py \
-  --config configs/train_480/exp2_7x7x5_power06_rgb_joint_shadow_mask_clean_20ep_b5x8_ga1_gb40.json \
-  --preflight \
-  --preflight_max_samples 128
-
-exec /usr/local/bin/accelerate launch \
-  --config_file configs/accelerate_8gpu_ddp.yaml \
-  model/train_tokenlight_joint_mask.py \
-  --config configs/train_480/exp2_7x7x5_power06_rgb_joint_shadow_mask_clean_20ep_b5x8_ga1_gb40.json
+launch_exp2_joint_mask \
+  configs/train_480/exp2_7x7x5_power06_rgb_joint_shadow_mask_clean_20ep_b5x8_ga1_gb40.json \
+  configs/accelerate_8gpu_ddp.yaml 0,1,2,3,4,5,6,7

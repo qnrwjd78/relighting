@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-cd /workspace
+cd "$(dirname -- "${BASH_SOURCE[0]}")/.."
 
-/usr/bin/python scripts/prepare_exp1_shadow_mask_metadata.py
+"${PYTHON_BIN:-python}" scripts/prepare_exp1_shadow_mask_metadata.py
 
-/usr/bin/python utils/build_latent_cache.py \
+"${PYTHON_BIN:-python}" utils/build_latent_cache.py \
   --mode custom \
   --image-keys shadow_mask \
   --transform none \
@@ -22,4 +22,4 @@ cd /workspace
   --vae-dtype bf16 \
   --save-dtype bf16
 
-/usr/bin/python scripts/preflight_exp1_shadow_mask_training.py
+"${PYTHON_BIN:-python}" scripts/preflight_exp1_shadow_mask_training.py
