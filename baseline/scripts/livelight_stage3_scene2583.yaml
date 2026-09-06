@@ -1,0 +1,43 @@
+vae_model_path: "/workspace/weights/livelight/sd-vae-ft-mse"
+image_encoder_path: "/workspace/weights/livelight/sd-image-variations-diffusers/image_encoder"
+pretrained_base_model_path: "/workspace/weights/livelight/sd-image-variations-diffusers"
+
+reference_unet_weight_path: "/workspace/weights/livelight/LiveLight/reference_unet-110000.pth"
+denoising_unet_path: "/workspace/weights/livelight/LiveLight/denoising_unet-110000.pth"
+light_guider_path: "/workspace/weights/livelight/LiveLight/light_guider-110000.pth"
+temporal_module_path: "/workspace/weights/livelight/LiveLight/temporal_module-20000.pth"
+
+light_channels: 12
+use_multiscale_light_injection: true
+multiscale_light_injection_scale: 0.25
+stage3_history_length: 16
+temporal_window_size: 4
+temporal_adaptive_step: 4
+timesteps_list: [999, 666, 333, 0]
+inference_config: "/workspace/baseline/repos/LiveLight/configs/inference/inference_stage3.yaml"
+seed: 42
+dtype: "fp16"
+width: 512
+height: 512
+num_inference_steps: 4
+
+ppd_root: "/workspace/baseline/repos/LiveLight/pixel-perfect-depth"
+ppd_python: "/workspace/conda_envs/livelight/bin/python"
+cache_dir: "/workspace/outputs/infer/relighting_external/scene_002583/height_0.9_49/livelight_stage3/cache"
+
+anchor_u: 0.5
+anchor_v: 0.5
+depth_patch_radius: 3
+plane_multipliers: [0.25, 0.5, 0.75, 1.0]
+base_s1: 25000.0
+canonical_subject_depth: 256.0
+s2: 1.0
+focal_scale: 1.3888034269574874
+
+default_light_u: 0.5
+default_light_v: 0.35
+default_light_z_rel: 1.0
+default_light_intensity: 1.0
+default_light_r: 1.0
+default_light_g: 1.0
+default_light_b: 1.0

@@ -41,8 +41,7 @@ htmlcov/
 /.codex_tmp/
 /local_archive/
 
-# Third-party checkouts and installed packages (see docs/REPOSITORY.md)
-/repos/
+# External dependencies and installed packages (baseline/repos is tracked)
 /external/
 
 # Python build artifacts / editor and OS files
@@ -91,3 +90,9 @@ checkpoints/
 *.exr
 *.mp4
 *.mov
+
+# Vendored baseline source and upstream example assets
+!/baseline/repos/genlit/genlit/data/
+!/baseline/repos/genlit/genlit/data/*.py
+!/baseline/repos/genlit/trajectories/*.npy
+!/baseline/repos/LiveLight/assets/demo.mp4

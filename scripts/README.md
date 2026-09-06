@@ -142,3 +142,12 @@ The suite now contains 53 passing CPU tests.
 one group and `--dry-run` / `--check` for planning and offline checks. See the
 [Conda setup guide](../docs/CONDA_SETUP.md) for the separate AdapterShadow SBU
 checkpoint input. Missing SBU results in nonzero exit after other downloads.
+
+## GenLit and LiveLight comparison tools
+
+The 20 comparison scripts and JSON/YAML configurations are in
+[`baseline/scripts/`](../baseline/scripts/), with their source repositories in
+`baseline/repos/`. See the [baseline guide](../baseline/README.md) for setup,
+download, and run commands. Weights remain in the root `weights/` directory.
+The shared `scripts/download_weights.sh` covers the core exp_0/1/2 and shadow_c2f
+weights; baseline downloads use the model-specific scripts.

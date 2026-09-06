@@ -10,6 +10,7 @@ the Docker workspace mount in the main README matches that layout.
 ## What belongs in Git
 
 - `model/`, `scripts/`, `utils/`, `relighting_dataset/`: project source code.
+- `baseline/repos/`, `baseline/scripts/`: vendored comparison sources and tools.
 - `configs/`: experiment parameters and distributed training configuration.
 - `tests/`, `docs/`, `docker/`, `patches/`, and root Markdown files: tests,
   documentation, environment definition, and local third-party changes.
@@ -18,7 +19,7 @@ the Docker workspace mount in the main README matches that layout.
 
 `.gitignore` keeps datasets, manifests under `data_train/`, weights, downloaded
 tokenizers under `model/Wan-AI/`, checkpoints, results, Conda installations,
-package caches, third-party checkouts, credentials, and temporary files local.
+package caches, external dependency checkouts, credentials, and temporary files local.
 `local_archive/` stores excluded training experiments and unrelated scripts. These rules do not delete files. Model binaries, NumPy caches, archives, and
 generated videos are excluded by extension as well.
 
@@ -39,33 +40,34 @@ that every experiment has been validated with them.
 
 | Local path | Upstream | Revision |
 | --- | --- | --- |
-| `repos/LiveLight` | https://github.com/mayuelala/LiveLight | `f17e981f3f7afe2de70345a9547fd6534ff64ef8` |
-| `repos/genlit` | https://github.com/sbharadwajj/genlit | `a1a8a811c917443fa41ccc910523aea555d01e38` |
+| `baseline/repos/LiveLight` | https://github.com/mayuelala/LiveLight | `f17e981f3f7afe2de70345a9547fd6534ff64ef8` |
+| `baseline/repos/genlit` | https://github.com/sbharadwajj/genlit | `a1a8a811c917443fa41ccc910523aea555d01e38` |
 | `external/AdapterShadow` | https://github.com/LeipingJie/AdapterShadow | `7171c6929f4f07117d73c10b821cffade8d8b38c` |
 | `external/FOCUS` | https://github.com/geshang777/FOCUS | `18b5c39e0905b5bc984057ff18c8104e1ae8e3b4` |
 | `external/detectron2` | https://github.com/facebookresearch/detectron2 | `a2f4a8771ab77e8411c26b27f24f9489a28a2453` |
 
-Clone the dependencies needed for your experiment into those paths and check out
-the listed revisions. Each dependency and model retains its upstream license.
-`external/python_pkgs/` contains local installed packages and is also excluded.
-See [the shadow pipeline documentation](SHADOW_C2F_PIPELINE.md) for active setup
-details. GenLit and LiveLight comparison scripts, including their setup scripts,
-now live in `local_archive/other_scripts/scripts/` and are not published. The
-revision and patch records below retain their provenance for local restoration.
+GenLit and LiveLight sources are included as ordinary tracked files under
+`baseline/repos/`, including the existing local LiveLight changes. Their upstream
+licenses are retained. The original nested Git metadata is backed up locally at
+`local_archive/baseline_git_metadata/` and is ignored.
 
-LiveLight and FOCUS had local changes to tracked files. These are preserved in
-`patches/livelight-local.patch` (per-frame light trajectories) and
-`patches/focus-local.patch` (PyTorch C++/CUDA API adjustments). On fresh checkouts
-of the revisions above, apply them from the project root:
+Clone optional `external/` dependencies at the revisions above when needed.
+`external/python_pkgs/` contains local installed packages and is excluded.
+See the [shadow pipeline documentation](SHADOW_C2F_PIPELINE.md) for details.
+
+The 20 GenLit/LiveLight comparison scripts and configurations are tracked under
+`baseline/scripts/`; see the [baseline guide](../baseline/README.md).
+Environments and weights remain local and ignored. Downloads and comparison
+launchers use `/workspace/weights/genlit` and `/workspace/weights/livelight`.
+
+`patches/livelight-local.patch` records the original per-frame trajectory changes,
+which are already included in `baseline/repos/LiveLight`; do not apply it again.
+`patches/focus-local.patch` records the FOCUS PyTorch C++/CUDA adjustments. Apply
+it only to a fresh upstream FOCUS checkout:
 
 ```bash
-git -C repos/LiveLight apply ../../patches/livelight-local.patch
 git -C external/FOCUS apply ../../patches/focus-local.patch
 ```
-
-The current workspace already includes those changes; do not apply them twice.
-The patches capture tracked changes relative to HEAD, not installed packages,
-untracked files, or a complete environment export.
 
 ## Review before committing
 

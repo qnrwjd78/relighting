@@ -1,0 +1,218 @@
+<div align="center">
+
+# ✨ LiveLight
+
+### Real-time Streaming Video Relighting with Interactive Control
+
+**ACM Transactions on Graphics (TOG) 2026**
+
+Yue Ma<sup>1</sup>, Jiangming Wang<sup>1</sup>, Yucheng Wang<sup>1</sup>, Xilai Wang<sup>1</sup>, Zhiyuan Li<sup>2</sup>, Xinyu Wang<sup>3</sup>, Hongyu Liu<sup>1</sup>, Ruofan Liang<sup>4</sup>, Songchun Zhang<sup>1</sup>, Yuxuan Xue<sup>5</sup>, and Qifeng Chen<sup>1†</sup>
+
+<sup>1</sup>HKUST &nbsp; <sup>2</sup>University of Macau &nbsp; <sup>3</sup>THU &nbsp; <sup>4</sup>UoT &nbsp; <sup>5</sup>University of Tuebingen
+
+<a href="https://arxiv.org/abs/2608.01771"><img src="https://img.shields.io/badge/Paper-PDF-dc2626?style=for-the-badge&logo=adobeacrobatreader&logoColor=white" alt="Paper"></a>
+<a href="https://living-lighting.github.io/"><img src="https://img.shields.io/badge/Project-Page-15803d?style=for-the-badge" alt="Project Page"></a>
+<a href="https://modelscope.cn/models/wjm1029/LiveLight"><img src="https://img.shields.io/badge/ModelScope-Weights-624AFF?style=for-the-badge" alt="ModelScope Weights"></a>
+<a href="https://github.com/mayuelala/LiveLight"><img src="https://img.shields.io/github/stars/mayuelala/LiveLight?style=for-the-badge&logo=github&label=Star" alt="GitHub stars"></a>
+
+</div>
+
+<p align="center">
+  <a href="https://living-lighting.github.io/"><img src="assets/readme/teaser.jpg" width="94%" alt="LiveLight video relighting results"></a>
+</p>
+
+## 🎥 Demo Video
+
+
+
+
+
+
+https://github.com/user-attachments/assets/0967ea9a-c463-4fae-b6da-95017dfacfde
+
+
+
+
+
+## ✨ Abstract
+
+**TL;DR:** LiveLight is the first diffusion-based framework for real-time streaming video relighting with interactive 3D point-light control. It lets users adjust light position, intensity, and color while preserving appearance and temporal coherence.
+
+<details>
+<summary>Click to expand the full abstract</summary>
+
+We present **LiveLight**, the first diffusion-based framework for real-time streaming video relighting with interactive 3D lighting control. Achieving this requires effectively injecting dynamic 3D lighting into a diffusion model, maintaining high-fidelity generation under an extremely low number of function evaluations, and facilitating continuous streaming for interactive control. LiveLight combines a lightweight adapter for Multi-Plane Light Irradiance conditions, a geometry-guided feedback branch for structure-preserving few-step distillation, and a progressive rolling-window strategy that maintains temporal coherence while supporting arbitrarily long video. Experiments on real-world and synthetic benchmarks demonstrate state-of-the-art relighting quality at real-time speed.
+
+</details>
+
+## 🔥 Changelog
+
+- **[2026.07.27]** Code and ModelScope weights are released.
+- **[2026.07.24]** Project page and paper are released.
+
+## 🎬 Results
+
+Each video is arranged as **input video**, **target light**, and **LiveLight output**.
+
+### Natural illumination
+
+https://github.com/user-attachments/assets/a4b66a52-44da-41e2-821a-e39d142c1aa7
+
+### RGB color control
+
+https://github.com/user-attachments/assets/dfea9ce8-494f-47a1-b5f0-1cf867363a70
+
+### Long-video streaming
+
+https://github.com/user-attachments/assets/7d9f91d8-6832-4bee-ad2b-82a63277da8b
+
+### Portrait lighting
+
+https://github.com/user-attachments/assets/9cd06769-c1d4-410d-a9ca-85f3e112aee8
+
+### Color-conditioned lighting
+
+https://github.com/user-attachments/assets/247f3ef8-25a7-40c2-aa5f-f5e5e51d21b1
+
+### Cinematic lighting
+
+https://github.com/user-attachments/assets/5715a39e-a85c-49fd-bb95-8620eba11a4f
+
+### Complex indoor scenes
+
+https://github.com/user-attachments/assets/0ce75698-6af4-4562-a216-61901f634e1a
+
+### Stylized content
+
+https://github.com/user-attachments/assets/703d7d98-f5c3-4910-b195-d7de5b30e585
+
+### Dynamic long sequences
+
+https://github.com/user-attachments/assets/dc61ce08-404a-4642-913f-9d4462b79a22
+
+## ✨ Highlights
+
+- **Interactive 3D lighting:** control point-light position, intensity, and RGB color directly.
+- **Real-time streaming:** relight an arbitrarily long video stream without waiting for a complete clip.
+- **High fidelity in four steps:** geometry-guided few-step distillation preserves structure, appearance, and temporal consistency.
+- **Fast inference:** 15.78 FPS and 0.253 s latency with the standard VAE.
+
+## 🛠️ Setup Environment
+
+```bash
+git clone https://github.com/mayuelala/LiveLight.git
+cd LiveLight
+
+conda create -n livelight python=3.10 -y
+conda activate livelight
+
+python -m pip install --upgrade pip
+pip install -r requirements.txt
+accelerate config
+```
+
+`xformers` is recommended to reduce GPU memory use and improve speed. The released requirements target CUDA-enabled PyTorch 2.1.0.
+
+## 📦 Weights
+
+Download the LiveLight weights from [ModelScope](https://modelscope.cn/models/wjm1029/LiveLight):
+
+```bash
+python -m pip install modelscope
+python download_weights.py
+```
+
+This downloads the denoising UNet, reference UNet, temporal module, and light guider to `pretrained_weights/LiveLight`. To use another location:
+
+```bash
+python download_weights.py --output-dir path/to/LiveLight_weights
+```
+
+The Stable Diffusion Image Variations base model, VAE, image encoder, and other third-party weights are not redistributed here. Download them separately and update the corresponding paths in `configs/train/` and `configs/prompts/`. The default configuration expects:
+
+```text
+pretrained_weights/
+├── LiveLight/
+├── sd-image-variations-diffusers/
+├── sd-vae-ft-mse/
+├── pixel-perfect-depth/
+└── xnemo/
+```
+
+## 🏋️ Training
+
+Update dataset paths, pretrained-model paths, output paths, and checkpoint paths in the configuration files before training.
+
+### Stage 1
+
+```bash
+accelerate launch train_livelight_stage1.py \
+  --config configs/train/relight_stage1.yaml
+```
+
+### Stage 2
+
+Set `warm_start_dir` in `configs/train/relight_stage2.yaml` to the Stage 1 checkpoint, then run:
+
+```bash
+accelerate launch train_livelight_stage2.py \
+  --config configs/train/relight_stage2.yaml
+```
+
+### Stage 3
+
+Set the Stage 2 checkpoint paths and temporal-module path in `configs/train/relight_stage3_finetune.yaml`, then run:
+
+```bash
+accelerate launch train_livelight_stage3_perframe_ref.py \
+  --config configs/train/relight_stage3_finetune.yaml
+```
+
+## 🎬 Inference
+
+### Stage 1: image relighting
+
+```bash
+python inference_livelight_stage1.py \
+  --input-image path/to/input.png \
+  --depth-npy path/to/input_depth.npy \
+  --output-dir outputs/stage1 \
+  --ckpt-dir path/to/stage1_checkpoint_dir \
+  --train-config configs/train/relight_stage1.yaml \
+  --use-xformers
+```
+
+Control lighting with `--light-u`, `--light-v`, `--light-z-rel`, `--light-intensity`, and `--light-color`.
+
+### Stage 3: streaming video relighting
+
+Prepare the input video as an ordered directory of frames. Update the model, temporal-module, and depth-estimator paths in `configs/prompts/relight_perframe_ref.yaml`, then run:
+
+```bash
+python inference_livelight_stage3.py \
+  --config-path configs/prompts/relight_perframe_ref.yaml \
+  --input-dir path/to/input_frames \
+  --depth-dir path/to/depth_maps \
+  --output-dir outputs/stage3 \
+  --num-frames 40 \
+  --acceleration xformers
+```
+
+`--depth-dir` is optional when Pixel Perfect Depth is configured. Results, metadata, and reports are written beneath `<output-dir>`.
+
+## 📖 Citation
+
+If you find LiveLight useful, please consider citing:
+
+```bibtex
+@article{ma2026livelight,
+  title={LiveLight: Real-time Streaming Video Relighting with Interactive Control},
+  author={Ma, Yue and Wang, Jiangming and Wang, Yucheng and Wang, Xilai and Li, Zhiyuan and Wang, Xinyu and Liu, Hongyu and Liang, Ruofan and Zhang, Songchun and Xue, Yuxuan and Chen, Qifeng},
+  journal={arXiv preprint arXiv:2608.01771},
+  year={2026}
+}
+```
+
+## 📄 License
+
+This project is released under the [MIT License](LICENSE).

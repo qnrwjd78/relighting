@@ -12,13 +12,15 @@ See the [script guide](scripts/README.md) for the retained tools and dependencie
   [the model guide](model/README.md).
 - `model/shadow_c2f/`: shadow refinement network, geometry, loss, and metrics.
 - `scripts/`: launchers, preprocessing, inference, and evaluation.
+- `baseline/`: tracked GenLit and LiveLight sources and comparison scripts; see
+  [the baseline guide](baseline/README.md).
 - `utils/`, `relighting_dataset/`: shared data and evaluation utilities.
 - `configs/train_480/`: exp_0, exp_1, and exp_2 experiment configurations.
 - `tests/`: regression tests for the retained workflows.
 - `docs/`: pipeline documentation and historical experiment notes.
 - `docker/`: CUDA image and dependency definition.
 
-Datasets, weights, caches, outputs, environments, third-party checkouts, and the
+Datasets, weights, caches, outputs, environments, external dependency checkouts, and the
 local archive are excluded from Git. See [repository notes](docs/REPOSITORY.md)
 and [retained training scope](docs/TRAINING_SCOPE.md).
 
@@ -78,7 +80,8 @@ python scripts/infer_shadow_c2f.py --help
 ```
 
 Shared inference components required by these experiments are kept. Unrelated
-PBR, CoShadow, LGI, GT-mask, GenLit, and LiveLight scripts are archived. The
+PBR, CoShadow, LGI, and GT-mask scripts are archived. GenLit and LiveLight
+comparison sources and setup/download/run scripts are in `baseline/`. The
 shadow_c2f AdapterShadow and online FOCUS paths remain available.
 
 ## Verification
