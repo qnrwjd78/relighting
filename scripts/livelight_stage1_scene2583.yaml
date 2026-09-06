@@ -1,0 +1,14 @@
+data:
+  train_width: 512
+  train_height: 512
+
+model:
+  light_channels: 12
+  enable_multiscale_light_injection: true
+  multiscale_light_injection_scale: 0.25
+
+base_model_path: "/workspace/weights/livelight/sd-image-variations-diffusers"
+vae_model_path: "/workspace/weights/livelight/sd-vae-ft-mse"
+image_encoder_path: "/workspace/weights/livelight/sd-image-variations-diffusers/image_encoder"
+inference_config: "/workspace/repos/LiveLight/configs/inference/inference_stage1&2.yaml"
+weight_dtype: "fp16"

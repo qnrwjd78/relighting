@@ -4,19 +4,21 @@ torchvision==0.21.0
 torchaudio==2.6.0
 torchcodec==0.2.1
 triton==3.2.0
-# transformers 4.57.x imports fine-grained FP8 dtypes that torch 2.6.0
-# does not expose, which breaks PEFT/DiffSynth import before training starts.
+# Keep the Hugging Face stack below transformers 4.57.x for torch 2.6.0.
+# Newer transformers imports fine-grained FP8 dtypes that this torch build
+# does not expose, which breaks PEFT/DiffSynth imports before training starts.
 transformers==4.56.2
-huggingface_hub>=0.34.0,<1.0
-fsspec[http]>=2023.1.0,<=2026.4.0
+tokenizers==0.22.2
+huggingface_hub==0.36.2
+fsspec[http]==2026.4.0
 imageio
 imageio[ffmpeg]
 OpenEXR
 av
-safetensors
+safetensors==0.8.0
 einops
-sentencepiece
-protobuf
+sentencepiece==0.2.1
+protobuf==7.35.0
 modelscope
 ftfy
 pandas
@@ -28,4 +30,8 @@ librosa
 soundfile
 tqdm
 pillow
+scipy
+lpips
+# AdapterShadow's published preprocessing uses cv2.resize.
+opencv-python-headless
 tensorboard>=2.16,<3

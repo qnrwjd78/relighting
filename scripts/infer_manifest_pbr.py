@@ -30,6 +30,8 @@ extract_lora_state = None
 extract_type_state = None
 load_pipe = None
 load_state = None
+infer_light_encoder_shape = None
+infer_type_embedding_num_types = None
 LightokenEncoder = None
 parse_attrs_json = None
 TokenLightPBRTypeEmbedding = None
@@ -40,6 +42,7 @@ tokenlight_pbr_type_count = None
 def ensure_runtime_imports(*, include_model: bool) -> None:
     global torch, Image, tqdm
     global encode_image_latents, extract_light_state, extract_lora_state, extract_type_state, load_pipe, load_state
+    global infer_light_encoder_shape, infer_type_embedding_num_types
     global LightokenEncoder, parse_attrs_json
     global TokenLightPBRTypeEmbedding, model_fn_wan_video_tokenlight_pbr, tokenlight_pbr_type_count
 
@@ -58,6 +61,8 @@ def ensure_runtime_imports(*, include_model: bool) -> None:
             extract_light_state as _extract_light_state,
             extract_lora_state as _extract_lora_state,
             extract_type_state as _extract_type_state,
+            infer_light_encoder_shape as _infer_light_encoder_shape,
+            infer_type_embedding_num_types as _infer_type_embedding_num_types,
             load_pipe as _load_pipe,
             load_state as _load_state,
         )
@@ -73,6 +78,8 @@ def ensure_runtime_imports(*, include_model: bool) -> None:
         extract_light_state = _extract_light_state
         extract_lora_state = _extract_lora_state
         extract_type_state = _extract_type_state
+        infer_light_encoder_shape = _infer_light_encoder_shape
+        infer_type_embedding_num_types = _infer_type_embedding_num_types
         load_pipe = _load_pipe
         load_state = _load_state
         LightokenEncoder = _LightokenEncoder
@@ -137,6 +144,31 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--fourier_features", type=int, default=512)
     parser.add_argument("--fourier_sigma", type=float, default=5.0)
     parser.add_argument("--tokenlight_max_lights", "--max-lights", type=int, default=2)
+    add_bool_arg(
+        parser,
+        "--drop-source",
+        default=False,
+        help_text="Zero the source-image latent so inference matches the UniRelight source-drop branch.",
+    )
+    add_bool_arg(
+        parser,
+        "--drop-pbr",
+        default=False,
+        help_text="Zero all PBR stream latents while keeping their conditioning tokens.",
+    )
+    parser.add_argument(
+        "--illum-head-checkpoint",
+        default="",
+        help="Optional illumination head checkpoint. If set, decode head(final_latents) next to each RGB output.",
+    )
+    parser.add_argument("--illum-output-suffix", default="_illum_head")
+    add_bool_arg(
+        parser,
+        "--save-pbr-predictions",
+        default=False,
+        help_text="Denoise PBR streams from noise and save decoded predicted depth/normal images.",
+    )
+    parser.add_argument("--pbr-output-suffix-format", default="_pred_{stream}")
 
     add_bool_arg(parser, "--skip-existing", default=True)
     add_bool_arg(parser, "--with-gt", default=True)
@@ -224,22 +256,44 @@ def setup_pipeline(args: argparse.Namespace):
         pipe.load_lora(pipe.dit, state_dict=lora, alpha=1.0)
 
     token_dim = args.token_dim if args.token_dim > 0 else int(pipe.dit.dim)
+    light_state = extract_light_state(combined)
+    max_lights, fourier_features = infer_light_encoder_shape(
+        light_state,
+        requested_max_lights=args.tokenlight_max_lights,
+        requested_fourier_features=args.fourier_features,
+    )
     light_encoder = LightokenEncoder(
         token_dim,
-        fourier_features=args.fourier_features,
+        fourier_features=fourier_features,
         fourier_sigma=args.fourier_sigma,
-        max_lights=args.tokenlight_max_lights,
+        max_lights=max_lights,
     ).to(device=pipe.device, dtype=pipe.torch_dtype)
-    load_matching_state(light_encoder, extract_light_state(combined), "light_encoder")
+    load_matching_state(light_encoder, light_state, "light_encoder")
     light_encoder.eval()
 
+    type_state = extract_type_state(combined)
+    num_types = infer_type_embedding_num_types(
+        type_state,
+        requested_num_types=tokenlight_pbr_type_count(len(streams)),
+    )
     type_embedding = TokenLightPBRTypeEmbedding(
         token_dim,
-        num_types=tokenlight_pbr_type_count(len(streams)),
+        num_types=num_types,
     ).to(device=pipe.device, dtype=pipe.torch_dtype)
-    load_matching_state(type_embedding, extract_type_state(combined), "tokenlight_type_embedding")
+    load_matching_state(type_embedding, type_state, "tokenlight_type_embedding")
     type_embedding.eval()
-    return pipe, light_encoder, type_embedding, streams
+
+    illum_head = None
+    if args.illum_head_checkpoint:
+        from model.illumination_latent_head import load_illumination_head_checkpoint  # noqa: WPS433
+
+        illum_head, _, _ = load_illumination_head_checkpoint(args.illum_head_checkpoint, map_location="cpu")
+        illum_head.to(device=pipe.device, dtype=pipe.torch_dtype)
+        illum_head.eval()
+        for param in illum_head.parameters():
+            param.requires_grad_(False)
+        print(f"[infer_manifest_pbr] loaded illumination head: {args.illum_head_checkpoint}", flush=True)
+    return pipe, light_encoder, type_embedding, illum_head, streams
 
 
 def pbr_image_path(row: dict[str, Any], args: argparse.Namespace, stream_name: str, key: str) -> Path:
@@ -251,6 +305,15 @@ def pbr_image_path(row: dict[str, Any], args: argparse.Namespace, stream_name: s
     return base.resolve_data(value, args)
 
 
+def illum_prediction_path(pred: Path, args: argparse.Namespace) -> Path:
+    return pred.with_name(f"{pred.stem}{args.illum_output_suffix}{pred.suffix}")
+
+
+def pbr_prediction_path(pred: Path, args: argparse.Namespace, stream_name: str) -> Path:
+    suffix = str(args.pbr_output_suffix_format).format(stream=stream_name)
+    return pred.with_name(f"{pred.stem}{suffix}{pred.suffix}")
+
+
 def runtime_no_grad(fn):
     def wrapper(*args, **kwargs):
         ensure_runtime_imports(include_model=False)
@@ -260,11 +323,51 @@ def runtime_no_grad(fn):
     return wrapper
 
 
+def split_model_outputs(output):
+    if isinstance(output, tuple):
+        return output[0], output[1]
+    return output, None
+
+
+def combine_pbr_outputs(pos, neg, cfg_scale: float):
+    if pos is None or neg is None:
+        return pos
+    if isinstance(pos, Mapping):
+        return {
+            stream_name: neg[stream_name] + cfg_scale * (value - neg[stream_name])
+            for stream_name, value in pos.items()
+        }
+    return neg + cfg_scale * (pos - neg)
+
+
+def pbr_output_for_stream(outputs, stream_name: str):
+    if outputs is None:
+        return None
+    if isinstance(outputs, Mapping):
+        return outputs.get(stream_name)
+    return outputs
+
+
+def make_latent_noise_like(latents_by_stream: Mapping[str, torch.Tensor], seed: int) -> dict[str, torch.Tensor]:
+    generator = torch.Generator(device=next(iter(latents_by_stream.values())).device)
+    generator.manual_seed(int(seed))
+    return {
+        stream_name: torch.randn(
+            latents.shape,
+            device=latents.device,
+            dtype=latents.dtype,
+            generator=generator,
+        )
+        for stream_name, latents in latents_by_stream.items()
+    }
+
+
 @runtime_no_grad
 def generate_pbr(
     pipe,
     light_encoder: LightokenEncoder,
     type_embedding: TokenLightPBRTypeEmbedding,
+    illum_head,
     attrs: dict[str, Any],
     source: Image.Image,
     pbr_images: dict[str, Image.Image],
@@ -331,25 +434,27 @@ def generate_pbr(
         inputs_shared, inputs_posi, inputs_nega = pipe.unit_runner(unit, pipe, inputs_shared, inputs_posi, inputs_nega)
 
     inputs_shared["tokenlight_attrs"] = [attrs]
-    inputs_shared["tokenlight_source_latents"] = encode_image_latents(pipe, source, args)
+    source_latents = encode_image_latents(pipe, source, args)
+    if args.drop_source:
+        source_latents = torch.zeros_like(source_latents)
+    inputs_shared["tokenlight_source_latents"] = source_latents
     pbr_clean_latents = {
         stream_name: encode_image_latents(pipe, image, args)
         for stream_name, image in pbr_images.items()
     }
-    pbr_is_target = args.pbr_mode == "target"
-    pbr_noise = None
-    if pbr_is_target:
-        generator = torch.Generator(device=pipe.device)
-        generator.manual_seed(int(args.seed) + 1_000_003)
-        pbr_noise = {
-            stream_name: torch.randn(
-                latents.shape,
-                device=latents.device,
-                dtype=latents.dtype,
-                generator=generator,
-            )
+    if args.drop_pbr:
+        pbr_clean_latents = {
+            stream_name: torch.zeros_like(latents)
             for stream_name, latents in pbr_clean_latents.items()
         }
+    predict_pbr = bool(args.save_pbr_predictions)
+    pbr_is_target = args.pbr_mode == "target" or predict_pbr
+    pbr_noise = None
+    pbr_current_latents = None
+    if predict_pbr:
+        pbr_current_latents = make_latent_noise_like(pbr_clean_latents, int(args.seed) + 1_000_003)
+    elif pbr_is_target:
+        pbr_noise = make_latent_noise_like(pbr_clean_latents, int(args.seed) + 1_000_003)
     else:
         inputs_shared["tokenlight_pbr_stream_latents"] = pbr_clean_latents
     inputs_shared["tokenlight_pbr_stream_is_target"] = {
@@ -362,7 +467,9 @@ def generate_pbr(
     models = {name: getattr(pipe, name) for name in pipe.in_iteration_models}
     for index, timestep in enumerate(tqdm(pipe.scheduler.timesteps)):
         timestep = timestep.unsqueeze(0).to(dtype=pipe.torch_dtype, device=pipe.device)
-        if pbr_is_target:
+        if predict_pbr:
+            inputs_shared["tokenlight_pbr_stream_latents"] = pbr_current_latents
+        elif pbr_is_target:
             inputs_shared["tokenlight_pbr_stream_latents"] = {
                 stream_name: pipe.scheduler.add_noise(
                     pbr_clean_latents[stream_name],
@@ -372,37 +479,88 @@ def generate_pbr(
                 for stream_name in pbr_clean_latents
             }
         noise_pos = pipe.model_fn(**models, **inputs_shared, **inputs_posi, timestep=timestep)
-        noise_pos = noise_pos[0] if isinstance(noise_pos, tuple) else noise_pos
+        noise_pos, pbr_noise_pos = split_model_outputs(noise_pos)
         if args.cfg_scale != 1.0:
             noise_neg = pipe.model_fn(**models, **inputs_shared, **inputs_nega, timestep=timestep)
-            noise_neg = noise_neg[0] if isinstance(noise_neg, tuple) else noise_neg
+            noise_neg, pbr_noise_neg = split_model_outputs(noise_neg)
             noise = noise_neg + args.cfg_scale * (noise_pos - noise_neg)
+            pbr_noise_pred = combine_pbr_outputs(pbr_noise_pos, pbr_noise_neg, args.cfg_scale)
         else:
             noise = noise_pos
+            pbr_noise_pred = pbr_noise_pos
         inputs_shared["latents"] = pipe.scheduler.step(noise, pipe.scheduler.timesteps[index], inputs_shared["latents"])
+        if predict_pbr:
+            updated_pbr_latents = {}
+            for stream_name, stream_latents in pbr_current_latents.items():
+                stream_noise = pbr_output_for_stream(pbr_noise_pred, stream_name)
+                if stream_noise is None:
+                    raise ValueError(f"Model did not return PBR prediction for stream `{stream_name}`")
+                updated_pbr_latents[stream_name] = pipe.scheduler.step(
+                    stream_noise,
+                    pipe.scheduler.timesteps[index],
+                    stream_latents,
+                )
+            pbr_current_latents = updated_pbr_latents
 
+    final_latents = inputs_shared["latents"]
     pipe.load_models_to_device(["vae"])
-    video = pipe.vae.decode(
-        inputs_shared["latents"],
+    rgb_decoded = pipe.vae.decode(
+        final_latents,
         device=pipe.device,
         tiled=True,
         tile_size=(30, 52),
         tile_stride=(15, 26),
     )
-    return pipe.vae_output_to_video(video)
+    rgb_video = pipe.vae_output_to_video(rgb_decoded)
+    illum_video = None
+    if illum_head is not None:
+        try:
+            head_param = next(illum_head.parameters())
+            head_device = head_param.device
+            head_dtype = head_param.dtype
+        except StopIteration:
+            head_device = pipe.device
+            head_dtype = pipe.torch_dtype
+        illum_latents = illum_head(final_latents.to(device=head_device, dtype=head_dtype))
+        illum_decoded = pipe.vae.decode(
+            illum_latents.to(dtype=pipe.torch_dtype, device=pipe.device),
+            device=pipe.device,
+            tiled=True,
+            tile_size=(30, 52),
+            tile_stride=(15, 26),
+        )
+        illum_video = pipe.vae_output_to_video(illum_decoded)
+    pbr_videos = {}
+    if predict_pbr:
+        for stream_name, stream_latents in pbr_current_latents.items():
+            pbr_decoded = pipe.vae.decode(
+                stream_latents,
+                device=pipe.device,
+                tiled=True,
+                tile_size=(30, 52),
+                tile_stride=(15, 26),
+            )
+            pbr_videos[stream_name] = pipe.vae_output_to_video(pbr_decoded)
+    return rgb_video, illum_video, pbr_videos
 
 
 def run_inference(rows: list[dict[str, Any]], output_dir: Path, args: argparse.Namespace) -> int:
     if not args.checkpoint:
         raise ValueError("--checkpoint is required unless --eval-only is set")
-    pipe, light_encoder, type_embedding, streams = setup_pipeline(args)
+    pipe, light_encoder, type_embedding, illum_head, streams = setup_pipeline(args)
     stream_keys = parse_stream_key_map(args.pbr_stream_image_keys, streams)
     completed = 0
     desc = Path(args.checkpoint).parent.name + "/" + Path(args.checkpoint).stem
     for row in tqdm(rows, desc=desc):
         pred = base.prediction_path(output_dir, row)
+        illum_pred = illum_prediction_path(pred, args) if illum_head is not None else None
+        pbr_preds = {
+            stream_name: pbr_prediction_path(pred, args, stream_name)
+            for stream_name in streams
+        } if args.save_pbr_predictions else {}
         target = base.target_path(row, args)
-        if args.skip_existing and pred.exists():
+        pbr_outputs_exist = all(path.exists() for path in pbr_preds.values())
+        if args.skip_existing and pred.exists() and (illum_pred is None or illum_pred.exists()) and pbr_outputs_exist:
             if args.with_gt and target and target.exists() and not base.with_gt_path(pred).exists():
                 base.ensure_runtime_imports(include_model=False)
                 base.save_with_gt(pred, base.source_path(row, args), target)
@@ -416,17 +574,25 @@ def run_inference(rows: list[dict[str, Any]], output_dir: Path, args: argparse.N
         }
         infer_args = argparse.Namespace(**vars(args))
         infer_args.prompt = row.get(args.prompt_key) or args.prompt
-        video = generate_pbr(
+        rgb_video, illum_video, pbr_videos = generate_pbr(
             pipe,
             light_encoder,
             type_embedding,
+            illum_head,
             parse_attrs_json(row.get(args.attrs_key)),
             source,
             pbr_images,
             infer_args,
         )
         pred.parent.mkdir(parents=True, exist_ok=True)
-        video[0].save(pred)
+        rgb_video[0].save(pred)
+        if illum_pred is not None and illum_video is not None:
+            illum_pred.parent.mkdir(parents=True, exist_ok=True)
+            illum_video[0].save(illum_pred)
+        for stream_name, stream_video in pbr_videos.items():
+            pbr_pred = pbr_preds[stream_name]
+            pbr_pred.parent.mkdir(parents=True, exist_ok=True)
+            stream_video[0].save(pbr_pred)
         if args.with_gt and target and target.exists():
             base.ensure_runtime_imports(include_model=False)
             base.save_with_gt(pred, source, target)
@@ -489,6 +655,14 @@ def write_snapshot(rows: list[dict[str, Any]], output_dir: Path, args: argparse.
         "cfg_scale": args.cfg_scale,
         "seed": args.seed,
         "tokenlight_max_lights": args.tokenlight_max_lights,
+        "drop_source": bool(args.drop_source),
+        "drop_pbr": bool(args.drop_pbr),
+        "illum_head_checkpoint": (
+            "" if not args.illum_head_checkpoint else base.resolve_repo(args.illum_head_checkpoint).as_posix()
+        ),
+        "illum_output_suffix": args.illum_output_suffix,
+        "save_pbr_predictions": bool(args.save_pbr_predictions),
+        "pbr_output_suffix_format": args.pbr_output_suffix_format,
         "pbr_streams": streams,
         "pbr_stream_image_keys": parse_stream_key_map(args.pbr_stream_image_keys, streams),
         "pbr_mode": args.pbr_mode,
@@ -510,6 +684,8 @@ def main() -> int:
     args.weights_dir = base.resolve_repo(args.weights_dir).as_posix()
     if args.checkpoint:
         args.checkpoint = base.resolve_repo(args.checkpoint).as_posix()
+    if args.illum_head_checkpoint:
+        args.illum_head_checkpoint = base.resolve_repo(args.illum_head_checkpoint).as_posix()
 
     rows = base.load_rows(Path(args.manifest), int(args.limit))
     output_dir = base.resolve_repo(args.output_dir)

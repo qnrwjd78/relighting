@@ -1,0 +1,138 @@
+diff --git a/inference_livelight_stage3.py b/inference_livelight_stage3.py
+index 835d9b8..037a027 100644
+--- a/inference_livelight_stage3.py
++++ b/inference_livelight_stage3.py
+@@ -35,6 +35,12 @@ def parse_args():
+     parser.add_argument("--light-r", type=float, default=1.0)
+     parser.add_argument("--light-g", type=float, default=1.0)
+     parser.add_argument("--light-b", type=float, default=1.0)
++    parser.add_argument(
++        "--light-trajectory-json",
++        type=str,
++        default=None,
++        help="Optional external trajectory manifest with one frames[].livelight entry per input frame.",
++    )
+     return parser.parse_args()
+ 
+ 
+@@ -70,9 +76,25 @@ def main():
+     try:
+         images = [Image.open(frame_path).convert("RGB") for frame_path in frames]
+         depth_maps = [maybe_load_depth(depth_dir, frame_path) for frame_path in frames]
+-        predictions, reports = runner.render_sequence(
+-            frame_images=images,
+-            overrides={
++        if args.light_trajectory_json:
++            trajectory = json.loads(Path(args.light_trajectory_json).read_text())["frames"]
++            if len(trajectory) < args.start_frame + len(frames):
++                raise ValueError("Light trajectory has fewer entries than the selected input frames")
++            selected = trajectory[args.start_frame : args.start_frame + len(frames)]
++            overrides = [
++                {
++                    "light_u": item["livelight"]["u"],
++                    "light_v": item["livelight"]["v"],
++                    "light_z_rel": item["livelight"]["z_rel"],
++                    "light_intensity": item["livelight"].get("intensity", args.light_intensity),
++                    "light_r": item["livelight"].get("color", [1, 1, 1])[0],
++                    "light_g": item["livelight"].get("color", [1, 1, 1])[1],
++                    "light_b": item["livelight"].get("color", [1, 1, 1])[2],
++                }
++                for item in selected
++            ]
++        else:
++            overrides = {
+                 "light_u": args.light_u,
+                 "light_v": args.light_v,
+                 "light_z_rel": args.light_z_rel,
+@@ -80,7 +102,10 @@ def main():
+                 "light_r": args.light_r,
+                 "light_g": args.light_g,
+                 "light_b": args.light_b,
+-            },
++            }
++        predictions, reports = runner.render_sequence(
++            frame_images=images,
++            overrides=overrides,
+             depth_maps=depth_maps,
+             frame_tags=[frame_path.name for frame_path in frames],
+         )
+@@ -96,6 +121,7 @@ def main():
+                 "input_dir": str(input_dir),
+                 "depth_dir": str(depth_dir) if depth_dir else None,
+                 "frame_count": len(frames),
++                "light_trajectory_json": args.light_trajectory_json,
+                 "light": {
+                     "u": args.light_u,
+                     "v": args.light_v,
+diff --git a/src/livelight_wrapper_perframe_ref.py b/src/livelight_wrapper_perframe_ref.py
+index 6dd36e7..a657fc7 100644
+--- a/src/livelight_wrapper_perframe_ref.py
++++ b/src/livelight_wrapper_perframe_ref.py
+@@ -397,7 +397,11 @@ class RelightPerFrameRefLive:
+         packed_light_tensors: List[torch.Tensor] = []
+         light_reports: List[Optional[Dict[str, object]]] = []
+ 
+-        for frame_image, depth_map, packed_light in zip(frame_images, depth_maps, packed_lights):
++        if isinstance(overrides, (list, tuple)) and len(overrides) != len(frame_images):
++            raise ValueError("Per-frame overrides must match frame_images length")
++        for frame_index, (frame_image, depth_map, packed_light) in enumerate(
++            zip(frame_images, depth_maps, packed_lights)
++        ):
+             frame_pil: Optional[Image.Image] = None
+             if ref_latents is None or clip_embeds is None or (packed_light is None and depth_map is None):
+                 frame_pil = frame_image.convert("RGB").resize((self.width, self.height), Image.BILINEAR)
+@@ -417,7 +421,8 @@ class RelightPerFrameRefLive:
+                     depth_map = self._resize_depth_map(depth_map)
+                 depth_source = "exported_mpli"
+ 
+-            params = self._light_params_from_dict(overrides)
++            frame_overrides = overrides[frame_index] if isinstance(overrides, (list, tuple)) else overrides
++            params = self._light_params_from_dict(frame_overrides)
+             light_report = None
+             if packed_light is not None:
+                 packed_light_tensor = packed_light.detach().to(dtype=torch.float32, device="cpu")
+@@ -953,7 +958,7 @@ class RelightPerFrameRefLive:
+             block_end = min(len(frame_images), block_start + block_size)
+             block_states = self._build_frame_states_batch(
+                 frame_images=frame_images[block_start:block_end],
+-                overrides=overrides,
++                overrides=(overrides[block_start:block_end] if isinstance(overrides, (list, tuple)) else overrides),
+                 depth_maps=depth_maps[block_start:block_end],
+                 frame_tags=frame_tags[block_start:block_end],
+                 packed_lights=packed_lights[block_start:block_end],
+@@ -998,6 +1003,8 @@ class RelightPerFrameRefLive:
+ 
+         if not (len(frame_images) == len(depth_maps) == len(frame_tags) == len(packed_lights)):
+             raise ValueError("frame_images/depth_maps/frame_tags/packed_lights must have the same length")
++        if isinstance(overrides, (list, tuple)) and len(overrides) != len(frame_images):
++            raise ValueError("Per-frame overrides must match frame_images length")
+         if precomputed_ref_latents is not None or precomputed_clip_embeds is not None:
+             if precomputed_ref_latents is None or precomputed_clip_embeds is None:
+                 raise ValueError("precomputed_ref_latents and precomputed_clip_embeds must be provided together")
+@@ -1009,7 +1016,7 @@ class RelightPerFrameRefLive:
+         if not self.use_stage3_sliding_rollout:
+             return self._render_sequence_whole_blocks(
+                 frame_images=frame_images,
+-                overrides=overrides,
++                overrides=(overrides[:first_chunk_end] if isinstance(overrides, (list, tuple)) else overrides),
+                 depth_maps=depth_maps,
+                 frame_tags=frame_tags,
+                 packed_lights=packed_lights,
+@@ -1035,7 +1042,7 @@ class RelightPerFrameRefLive:
+             first_chunk_end = min(len(frame_images), tw)
+             first_chunk_states = self._build_frame_states_batch(
+                 frame_images=frame_images[:first_chunk_end],
+-                overrides=overrides,
++                overrides=(overrides[:first_chunk_end] if isinstance(overrides, (list, tuple)) else overrides),
+                 depth_maps=depth_maps[:first_chunk_end],
+                 frame_tags=frame_tags[:first_chunk_end],
+                 packed_lights=packed_lights[:first_chunk_end],
+@@ -1100,7 +1107,7 @@ class RelightPerFrameRefLive:
+             chunk_end = min(len(frame_images), chunk_start + tw)
+             chunk_states = self._build_frame_states_batch(
+                 frame_images=frame_images[chunk_start:chunk_end],
+-                overrides=overrides,
++                overrides=(overrides[chunk_start:chunk_end] if isinstance(overrides, (list, tuple)) else overrides),
+                 depth_maps=depth_maps[chunk_start:chunk_end],
+                 frame_tags=frame_tags[chunk_start:chunk_end],
+                 packed_lights=packed_lights[chunk_start:chunk_end],

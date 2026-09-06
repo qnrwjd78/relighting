@@ -15,7 +15,13 @@ from diffsynth.utils.data import save_video
 if __package__ is None:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from model.lightoken_encoder import LightokenEncoder, parse_attrs_json
+from model.lightoken_encoder import (
+    GLOBAL_LIGHTOKEN_NAMES,
+    LIGHTOKEN_NAMES,
+    PER_LIGHTOKEN_NAMES,
+    LightokenEncoder,
+    parse_attrs_json,
+)
 from model.pretrain_weight import validate_wan22_weights, wan22_model_paths, wan22_tokenizer_path
 from model.tokenlight_wan import TokenLightTypeEmbedding, model_fn_wan_video_tokenlight
 
@@ -101,6 +107,78 @@ def extract_type_state(state: dict[str, torch.Tensor] | None) -> dict[str, torch
     return result
 
 
+def light_token_count_for_max_lights(max_lights: int) -> int:
+    max_lights = max(1, int(max_lights))
+    if max_lights == 1:
+        return len(LIGHTOKEN_NAMES)
+    return len(GLOBAL_LIGHTOKEN_NAMES) + max_lights * len(PER_LIGHTOKEN_NAMES)
+
+
+def infer_light_encoder_shape(
+    light_state: dict[str, torch.Tensor],
+    *,
+    requested_max_lights: int,
+    requested_fourier_features: int,
+) -> tuple[int, int]:
+    max_lights = max(1, int(requested_max_lights))
+    fourier_features = int(requested_fourier_features)
+    weight = light_state.get("fourier.weight")
+    if not isinstance(weight, torch.Tensor) or weight.ndim != 2:
+        return max_lights, fourier_features
+
+    attr_count = int(weight.shape[0])
+    checkpoint_fourier_features = int(weight.shape[1])
+    if checkpoint_fourier_features > 0 and checkpoint_fourier_features != fourier_features:
+        print(
+            "Using fourier_features="
+            f"{checkpoint_fourier_features} from light checkpoint "
+            f"(requested {fourier_features})."
+        )
+        fourier_features = checkpoint_fourier_features
+
+    expected_attr_count = light_token_count_for_max_lights(max_lights)
+    if attr_count == expected_attr_count:
+        return max_lights, fourier_features
+
+    inferred_max_lights = None
+    if attr_count == len(LIGHTOKEN_NAMES):
+        inferred_max_lights = 1
+    else:
+        global_count = len(GLOBAL_LIGHTOKEN_NAMES)
+        per_light_count = len(PER_LIGHTOKEN_NAMES)
+        if attr_count > global_count and (attr_count - global_count) % per_light_count == 0:
+            inferred_max_lights = (attr_count - global_count) // per_light_count
+
+    if inferred_max_lights is not None and inferred_max_lights > 0:
+        print(
+            "Using tokenlight_max_lights="
+            f"{inferred_max_lights} from light checkpoint "
+            f"(fourier.weight has {attr_count} attrs; requested {max_lights})."
+        )
+        max_lights = int(inferred_max_lights)
+    return max_lights, fourier_features
+
+
+def infer_type_embedding_num_types(
+    type_state: dict[str, torch.Tensor],
+    *,
+    requested_num_types: int = 4,
+) -> int:
+    num_types = int(requested_num_types)
+    weight = type_state.get("embedding.weight")
+    if not isinstance(weight, torch.Tensor) or weight.ndim != 2:
+        return num_types
+    checkpoint_num_types = int(weight.shape[0])
+    if checkpoint_num_types > 0 and checkpoint_num_types != num_types:
+        print(
+            "Using tokenlight type num_types="
+            f"{checkpoint_num_types} from checkpoint "
+            f"(requested {num_types})."
+        )
+        num_types = checkpoint_num_types
+    return num_types
+
+
 def load_attrs(value: str) -> dict[str, float]:
     path = Path(value)
     return parse_attrs_json(path.read_text(encoding="utf-8") if path.exists() else value)
@@ -145,6 +223,7 @@ def generate(
     source: Image.Image,
     mask: Image.Image | None,
     args: argparse.Namespace,
+    extra_masks: list[Image.Image] | None = None,
 ):
     pipe.model_fn = lambda **kwargs: model_fn_wan_video_tokenlight(
         tokenlight_light_encoder=light_encoder,
@@ -213,6 +292,10 @@ def generate(
         inputs_shared["tokenlight_mask_latents"] = encode_image_latents(pipe, mask, args)
     elif getattr(args, "tokenlight_mask_tokens", True):
         inputs_shared["tokenlight_mask_latents"] = torch.zeros_like(source_latents)
+    if extra_masks:
+        inputs_shared["tokenlight_extra_mask_latents"] = [
+            encode_image_latents(pipe, extra_mask, args) for extra_mask in extra_masks
+        ]
     inputs_posi["tokenlight_drop_light"] = False
     inputs_nega["tokenlight_drop_light"] = True
 
@@ -243,14 +326,19 @@ def main() -> int:
         pipe.load_lora(pipe.dit, state_dict=lora, alpha=1.0)
 
     token_dim = args.token_dim if args.token_dim > 0 else int(pipe.dit.dim)
-    light_encoder = LightokenEncoder(
-        token_dim,
-        fourier_features=args.fourier_features,
-        fourier_sigma=args.fourier_sigma,
-        max_lights=int(getattr(args, "tokenlight_max_lights", 1)),
-    ).to(device=pipe.device, dtype=pipe.torch_dtype)
     light_checkpoint_state = load_state(args.light_checkpoint) if args.light_checkpoint else combined
     light_state = extract_light_state(light_checkpoint_state)
+    max_lights, fourier_features = infer_light_encoder_shape(
+        light_state,
+        requested_max_lights=getattr(args, "tokenlight_max_lights", 1),
+        requested_fourier_features=args.fourier_features,
+    )
+    light_encoder = LightokenEncoder(
+        token_dim,
+        fourier_features=fourier_features,
+        fourier_sigma=args.fourier_sigma,
+        max_lights=max_lights,
+    ).to(device=pipe.device, dtype=pipe.torch_dtype)
     if light_state:
         light_encoder.load_state_dict(light_state, strict=False)
     light_encoder.eval()
@@ -258,7 +346,11 @@ def main() -> int:
     type_embedding = None
     type_state = extract_type_state(light_checkpoint_state)
     if type_state:
-        type_embedding = TokenLightTypeEmbedding(token_dim).to(device=pipe.device, dtype=pipe.torch_dtype)
+        num_types = infer_type_embedding_num_types(type_state, requested_num_types=4)
+        type_embedding = TokenLightTypeEmbedding(token_dim, num_types=num_types).to(
+            device=pipe.device,
+            dtype=pipe.torch_dtype,
+        )
         type_embedding.load_state_dict(type_state, strict=False)
         type_embedding.eval()
 

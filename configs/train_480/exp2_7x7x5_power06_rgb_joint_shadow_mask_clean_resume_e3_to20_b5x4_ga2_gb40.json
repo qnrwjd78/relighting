@@ -1,0 +1,96 @@
+{
+  "paths": {
+    "weights_dir": "weights/Wan2.2-TI2V-5B",
+    "output_path": "outputs/train/exp_2/rgb_joint_shadow_mask_cleancond_7x7x5_power06_scene64_resume_e3_to20_b5x4_ga2_gb40",
+    "append_timestamp": true,
+    "timestamp_format": "%Y%m%d_%H%M%S",
+    "remove_prefix_in_ckpt": "pipe.dit."
+  },
+  "dataset": {
+    "dataset_base_path": "data/objaverse_245_train_rgb_cache_0000_1999",
+    "dataset_metadata_path": "data_train/objaverse_fixed_7x7x5_power06_rgb_shadow_mask_480/metadata.jsonl",
+    "dataset_reject_metadata_path": null,
+    "data_file_keys": "video,input_image",
+    "height": 480,
+    "width": 480,
+    "max_pixels": 230400,
+    "num_frames": 1,
+    "dataset_repeat": 1,
+    "dataset_num_workers": 0,
+    "dataset_auto_workers": true,
+    "batch_size": 5,
+    "balanced_task_batch": "position:5",
+    "balanced_batch_seed": 480,
+    "vae_latent_cache_specs": null,
+    "vae_latent_cache_shard_lru": 64,
+    "scene_latent_cache_root": null
+  },
+  "optimization": {
+    "learning_rate": 0.0001,
+    "num_epochs": 17,
+    "weight_decay": 0.01,
+    "gradient_accumulation_steps": 2,
+    "save_steps": null,
+    "customized_optimizer": null
+  },
+  "lora": {
+    "trainable_models": null,
+    "lora_base_model": "dit",
+    "lora_target_modules": "q,k,v,o,ffn.0,ffn.2",
+    "lora_rank": 128,
+    "lora_checkpoint": "outputs/train/exp_2/rgb_joint_shadow_mask_cleancond_7x7x5_power06_scene64_fresh_20ep_b5x8_ga1_gb40_20260831_161445/epoch-3.safetensors",
+    "preset_lora_path": null,
+    "preset_lora_model": null
+  },
+  "tokenlight": {
+    "tokenlight_light_tokens": true,
+    "tokenlight_source_tokens": true,
+    "tokenlight_mask_tokens": false,
+    "tokenlight_mask_image_key": "shadow_mask",
+    "tokenlight_extra_mask_image_keys": "",
+    "tokenlight_attrs_key": "attrs_json",
+    "tokenlight_token_dim": 0,
+    "tokenlight_fourier_features": 512,
+    "tokenlight_fourier_sigma": 5.0,
+    "tokenlight_max_lights": 2,
+    "tokenlight_light_dropout": 0.0,
+    "tokenlight_cfg_drop_prob": 0.1
+  },
+  "joint_mask": {
+    "tokenlight_joint_shadow_mask_key": "shadow_mask",
+    "tokenlight_joint_mask_loss_weight": 0.1,
+    "tokenlight_joint_mask_bce_weight": 1.0,
+    "tokenlight_joint_mask_dice_weight": 0.1,
+    "tokenlight_joint_mask_source_channels": 48,
+    "tokenlight_joint_mask_base_channels": 96,
+    "tokenlight_joint_mask_condition_dim": 128,
+    "tokenlight_joint_mask_output_height": 480,
+    "tokenlight_joint_mask_output_width": 480,
+    "tokenlight_predicted_mask_condition_scale": 1.0
+  },
+  "loss": {
+    "tokenlight_rgb_latent_loss_weight": 1.0,
+    "tokenlight_rgb_decoder_loss_weight": 0.0,
+    "tokenlight_rgb_decoder_transform": "rgb",
+    "tokenlight_decoder_loss_type": "mse",
+    "tokenlight_decoder_tiled": false
+  },
+  "runtime": {
+    "task": "sft",
+    "start_epoch": 3,
+    "use_gradient_checkpointing": true,
+    "initialize_model_on_cpu": false,
+    "framewise_decoding": false,
+    "find_unused_parameters": false,
+    "max_timestep_boundary": 1.0,
+    "min_timestep_boundary": 0.0,
+    "extra_inputs": null,
+    "fp8_models": null,
+    "offload_models": null,
+    "save_full_checkpoints": false,
+    "save_full_checkpoints_final_only": false
+  },
+  "logging": {
+    "enable_tensorboard_log": true
+  }
+}

@@ -951,6 +951,7 @@ def _component_parameter_summaries(model) -> dict:
         "pipe.text_encoder": getattr(pipe, "text_encoder", None),
         "light_encoder": getattr(model, "light_encoder", None),
         "tokenlight_type_embedding": getattr(model, "tokenlight_type_embedding", None),
+        "joint_mask_predictor": getattr(model, "joint_mask_predictor", None),
     }
     return {
         name: _parameter_runtime_summary(module)
@@ -1116,6 +1117,7 @@ def _collect_train_metrics(accelerator, model, optimizer, loss):
     for prefix, module in (
         ("train/light_encoder", getattr(unwrapped_model, "light_encoder", None)),
         ("train/type_embedding", getattr(unwrapped_model, "tokenlight_type_embedding", None)),
+        ("train/joint_mask_predictor", getattr(unwrapped_model, "joint_mask_predictor", None)),
     ):
         for key, value in _module_gradient_stats(module).items():
             metrics[f"{prefix}_{key}"] = _mean_across_processes(accelerator, value)

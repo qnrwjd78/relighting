@@ -31,6 +31,8 @@ extract_type_state = None
 generate = None
 load_pipe = None
 load_state = None
+infer_light_encoder_shape = None
+infer_type_embedding_num_types = None
 LightokenEncoder = None
 TokenLightTypeEmbedding = None
 parse_attrs_json = None
@@ -39,6 +41,7 @@ parse_attrs_json = None
 def ensure_runtime_imports(*, include_model: bool) -> None:
     global np, torch, Image, ImageDraw, ImageFont, tqdm
     global extract_light_state, extract_lora_state, extract_type_state, generate, load_pipe, load_state
+    global infer_light_encoder_shape, infer_type_embedding_num_types
     global LightokenEncoder, TokenLightTypeEmbedding, parse_attrs_json
 
     if torch is None or Image is None or ImageFont is None:
@@ -62,6 +65,8 @@ def ensure_runtime_imports(*, include_model: bool) -> None:
             extract_lora_state as _extract_lora_state,
             extract_type_state as _extract_type_state,
             generate as _generate,
+            infer_light_encoder_shape as _infer_light_encoder_shape,
+            infer_type_embedding_num_types as _infer_type_embedding_num_types,
             load_pipe as _load_pipe,
             load_state as _load_state,
         )
@@ -73,6 +78,8 @@ def ensure_runtime_imports(*, include_model: bool) -> None:
         extract_lora_state = _extract_lora_state
         extract_type_state = _extract_type_state
         generate = _generate
+        infer_light_encoder_shape = _infer_light_encoder_shape
+        infer_type_embedding_num_types = _infer_type_embedding_num_types
         load_pipe = _load_pipe
         load_state = _load_state
         LightokenEncoder = _LightokenEncoder
@@ -101,8 +108,20 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--target-fallback-key", default="video")
     parser.add_argument("--mask-key", default="inf_mask")
     parser.add_argument("--mask-fallback-key", default="mask")
+    parser.add_argument("--extra-mask-keys", default="")
+    parser.add_argument("--eval-mask-key", default="mask")
     parser.add_argument("--attrs-key", default="attrs_json")
     parser.add_argument("--prompt-key", default="prompt")
+    parser.add_argument(
+        "--seed-key",
+        default="",
+        help="Optional manifest key containing a per-row inference seed.",
+    )
+    parser.add_argument(
+        "--prediction-name-key",
+        default="",
+        help="Optional manifest key containing a unique output filename.",
+    )
 
     parser.add_argument("--prompt", default=DEFAULT_PROMPT)
     parser.add_argument("--height", type=int, default=960)
@@ -125,6 +144,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--tokenlight_max_lights", "--max-lights", type=int, default=1)
     add_bool_arg(parser, "--tokenlight_mask_tokens", default=True)
     add_bool_arg(parser, "--use-mask-input", default=False)
+    add_bool_arg(
+        parser,
+        "--require-mask-input",
+        default=False,
+        help_text=(
+            "Validate every resolved mask before model loading and refuse missing, "
+            "wrong-sized, or non-binary mask inputs. Empty all-zero masks are valid."
+        ),
+    )
 
     add_bool_arg(parser, "--skip-existing", default=True)
     add_bool_arg(parser, "--with-gt", default=True)
@@ -215,7 +243,18 @@ def apply_worker_device(device_id: str, args: argparse.Namespace) -> argparse.Na
     return worker_args
 
 
-def prediction_path(output_dir: Path, row: dict[str, Any]) -> Path:
+def prediction_path(output_dir: Path, row: dict[str, Any], args: argparse.Namespace) -> Path:
+    if args.prediction_name_key:
+        value = row.get(args.prediction_name_key)
+        if value in (None, ""):
+            raise KeyError(
+                f"Missing prediction name key {args.prediction_name_key!r} "
+                f"in manifest row {row.get('_manifest_index')}"
+            )
+        name = Path(str(value)).name
+        if not Path(name).suffix:
+            name += ".png"
+        return output_dir / name
     scene_id = str(row.get("scene_id") or f"item_{int(row.get('_manifest_index', 0)):06d}")
     light_id = row.get("light_id")
     if light_id is None:
@@ -242,6 +281,145 @@ def source_path(row: dict[str, Any], args: argparse.Namespace) -> Path:
 def mask_path(row: dict[str, Any], args: argparse.Namespace) -> Path | None:
     value = row_value(row, args.mask_key, args.mask_fallback_key)
     return resolve_data(value, args) if value else None
+
+
+def _required_mask_value(row: dict[str, Any], args: argparse.Namespace) -> tuple[Any, str, bool]:
+    """Resolve one required mask while preserving whether fallback was used."""
+    mask_key = str(getattr(args, "mask_key", "") or "")
+    if not mask_key:
+        raise KeyError("--mask-key must be non-empty when --require-mask-input is enabled")
+    value = row.get(mask_key)
+    if value not in (None, ""):
+        return value, mask_key, False
+
+    fallback_key = str(getattr(args, "mask_fallback_key", "") or "")
+    if not fallback_key:
+        raise KeyError(f"Missing required mask key {mask_key!r}; mask fallback is disabled")
+    fallback = row.get(fallback_key)
+    if fallback in (None, ""):
+        raise KeyError(
+            f"Missing required mask key {mask_key!r} and fallback key {fallback_key!r}"
+        )
+    return fallback, fallback_key, True
+
+
+def _validate_required_mask_asset(path: Path, expected_size: tuple[int, int]) -> dict[str, Any]:
+    """Validate the hard white-foreground mask representation used during training."""
+    from PIL import Image as PILImage
+
+    if not path.is_file():
+        raise FileNotFoundError(path)
+    try:
+        with PILImage.open(path) as opened:
+            if opened.size != expected_size:
+                raise ValueError(
+                    f"expected size {expected_size[0]}x{expected_size[1]}, "
+                    f"got {opened.size[0]}x{opened.size[1]}"
+                )
+            histogram = opened.convert("L").histogram()
+    except (OSError, SyntaxError) as error:
+        raise ValueError(f"cannot decode mask image: {error}") from error
+
+    unexpected = [value for value, count in enumerate(histogram) if count and value not in (0, 255)]
+    if unexpected:
+        preview = unexpected[:8]
+        suffix = "..." if len(unexpected) > len(preview) else ""
+        raise ValueError(
+            "mask must be hard binary with 0=background and 255=foreground (white); "
+            f"found values {preview}{suffix}"
+        )
+    foreground_pixels = int(histogram[255])
+    pixel_count = int(sum(histogram))
+    return {
+        "empty": foreground_pixels == 0,
+        "foreground_pixels": foreground_pixels,
+        "pixel_count": pixel_count,
+    }
+
+
+def preflight_required_masks(rows: list[dict[str, Any]], args: argparse.Namespace) -> dict[str, Any]:
+    """Validate all required conditioning masks before any model is loaded."""
+    if not bool(getattr(args, "use_mask_input", False)):
+        raise ValueError("--require-mask-input requires --use-mask-input")
+    if not bool(getattr(args, "tokenlight_mask_tokens", False)):
+        raise ValueError("--require-mask-input requires --tokenlight_mask_tokens")
+
+    expected_size = (int(args.width), int(args.height))
+    if expected_size[0] <= 0 or expected_size[1] <= 0:
+        raise ValueError(f"Invalid required mask size: {expected_size}")
+
+    asset_results: dict[Path, dict[str, Any] | Exception] = {}
+    failures: list[str] = []
+    failure_count = 0
+    primary_rows = 0
+    fallback_rows = 0
+    empty_rows = 0
+
+    for row_index, row in enumerate(rows):
+        manifest_index = row.get("_manifest_index", row_index)
+        identity = f"row {manifest_index} ({row.get('scene_id', '<unknown>')}/{row.get('light_id', '<none>')})"
+        try:
+            value, _, used_fallback = _required_mask_value(row, args)
+            path = resolve_data(value, args)
+            if path not in asset_results:
+                try:
+                    asset_results[path] = _validate_required_mask_asset(path, expected_size)
+                except Exception as error:  # retain one decoded result for duplicate paths
+                    asset_results[path] = error
+            result = asset_results[path]
+            if isinstance(result, Exception):
+                raise result
+            fallback_rows += int(used_fallback)
+            primary_rows += int(not used_fallback)
+            empty_rows += int(bool(result["empty"]))
+        except Exception as error:
+            failure_count += 1
+            if len(failures) < 20:
+                failures.append(f"{identity}: {error}")
+
+    if failure_count:
+        details = "\n".join(f"  - {item}" for item in failures)
+        omitted = failure_count - len(failures)
+        if omitted:
+            details += f"\n  - ... {omitted} additional error(s)"
+        raise ValueError(f"Required mask preflight failed with {failure_count} error(s):\n{details}")
+
+    summary = {
+        "schema": "tokenlight_required_mask_preflight_v1",
+        "row_count": len(rows),
+        "unique_mask_count": len(asset_results),
+        "primary_rows": primary_rows,
+        "fallback_rows": fallback_rows,
+        "empty_rows": empty_rows,
+        "expected_size": [expected_size[0], expected_size[1]],
+        "polarity": "0=background,255=foreground_white",
+        "empty_masks_allowed": True,
+    }
+    print(
+        "[infer_manifest] required-mask preflight: "
+        f"rows={summary['row_count']} unique={summary['unique_mask_count']} "
+        f"fallback={summary['fallback_rows']} empty={summary['empty_rows']} "
+        f"size={expected_size[0]}x{expected_size[1]} polarity=white-foreground",
+        flush=True,
+    )
+    return summary
+
+
+def extra_mask_paths(row: dict[str, Any], args: argparse.Namespace) -> list[Path]:
+    paths: list[Path] = []
+    for key in (item.strip() for item in str(args.extra_mask_keys or "").split(",")):
+        if not key:
+            continue
+        value = row.get(key)
+        if value in (None, ""):
+            raise KeyError(f"Missing extra mask key {key!r} in manifest row {row.get('_manifest_index')}")
+        paths.append(resolve_data(value, args))
+    return paths
+
+
+def eval_mask_path(row: dict[str, Any], args: argparse.Namespace) -> Path | None:
+    value = row.get(args.eval_mask_key)
+    return resolve_data(value, args) if value not in (None, "") else None
 
 
 def label_font(panel_height: int):
@@ -307,13 +485,18 @@ def setup_pipeline(args: argparse.Namespace):
         pipe.load_lora(pipe.dit, state_dict=lora, alpha=1.0)
 
     token_dim = args.token_dim if args.token_dim > 0 else int(pipe.dit.dim)
+    light_state = extract_light_state(combined)
+    max_lights, fourier_features = infer_light_encoder_shape(
+        light_state,
+        requested_max_lights=args.tokenlight_max_lights,
+        requested_fourier_features=args.fourier_features,
+    )
     light_encoder = LightokenEncoder(
         token_dim,
-        fourier_features=args.fourier_features,
+        fourier_features=fourier_features,
         fourier_sigma=args.fourier_sigma,
-        max_lights=args.tokenlight_max_lights,
+        max_lights=max_lights,
     ).to(device=pipe.device, dtype=pipe.torch_dtype)
-    light_state = extract_light_state(combined)
     if light_state:
         light_encoder.load_state_dict(light_state, strict=False)
     light_encoder.eval()
@@ -321,7 +504,11 @@ def setup_pipeline(args: argparse.Namespace):
     type_embedding = None
     type_state = extract_type_state(combined)
     if type_state:
-        type_embedding = TokenLightTypeEmbedding(token_dim).to(device=pipe.device, dtype=pipe.torch_dtype)
+        num_types = infer_type_embedding_num_types(type_state, requested_num_types=4)
+        type_embedding = TokenLightTypeEmbedding(token_dim, num_types=num_types).to(
+            device=pipe.device,
+            dtype=pipe.torch_dtype,
+        )
         type_embedding.load_state_dict(type_state, strict=False)
         type_embedding.eval()
     return pipe, light_encoder, type_embedding
@@ -338,7 +525,7 @@ def run_inference(rows: list[dict[str, Any]], output_dir: Path, args: argparse.N
     completed = 0
     desc = Path(args.checkpoint).parent.name + "/" + Path(args.checkpoint).stem
     for row in tqdm(rows, desc=desc):
-        pred = prediction_path(output_dir, row)
+        pred = prediction_path(output_dir, row, args)
         target = target_path(row, args)
         if args.skip_existing and pred.exists():
             if args.with_gt and target and target.exists() and not with_gt_path(pred).exists():
@@ -351,10 +538,35 @@ def run_inference(rows: list[dict[str, Any]], output_dir: Path, args: argparse.N
         current_mask = mask_path(row, args)
         if args.use_mask_input and current_mask and current_mask.exists():
             mask = Image.open(current_mask).convert("RGB")
+        elif bool(getattr(args, "require_mask_input", False)):
+            raise FileNotFoundError(
+                current_mask
+                or f"Required mask disappeared or no longer resolves for manifest row {row.get('_manifest_index')}"
+            )
+        current_extra_masks = extra_mask_paths(row, args)
+        missing_extra_masks = [path for path in current_extra_masks if not path.exists()]
+        if missing_extra_masks:
+            raise FileNotFoundError(missing_extra_masks[0])
+        extra_masks = [Image.open(path).convert("RGB") for path in current_extra_masks]
 
         infer_args = argparse.Namespace(**vars(args))
         infer_args.prompt = row.get(args.prompt_key) or args.prompt
-        video = generate(pipe, light_encoder, type_embedding, attrs_from_row(row, args.attrs_key), source, mask, infer_args)
+        if args.seed_key:
+            if row.get(args.seed_key) in (None, ""):
+                raise KeyError(
+                    f"Missing seed key {args.seed_key!r} in manifest row {row.get('_manifest_index')}"
+                )
+            infer_args.seed = int(row[args.seed_key])
+        video = generate(
+            pipe,
+            light_encoder,
+            type_embedding,
+            attrs_from_row(row, args.attrs_key),
+            source,
+            mask,
+            infer_args,
+            extra_masks=extra_masks,
+        )
         pred.parent.mkdir(parents=True, exist_ok=True)
         video[0].save(pred)
         if args.with_gt and target and target.exists():
@@ -479,6 +691,15 @@ def object_crop(pred: torch.Tensor, target: torch.Tensor, mask: torch.Tensor) ->
     return obj_pred, obj_target
 
 
+def background_images(
+    pred: torch.Tensor, target: torch.Tensor, object_mask: torch.Tensor
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Neutralize object pixels so SSIM/LPIPS measure only the background."""
+    mask = object_mask.to(device=pred.device, dtype=pred.dtype)
+    neutral = torch.full_like(pred, 0.5)
+    return torch.where(mask > 0.5, neutral, pred), torch.where(mask > 0.5, neutral, target)
+
+
 class LpipsMetric:
     def __init__(self, device: torch.device, net: str) -> None:
         import lpips
@@ -517,7 +738,7 @@ def run_eval(rows: list[dict[str, Any]], output_dir: Path, args: argparse.Namesp
 
     with torch.no_grad():
         for row in tqdm(rows, desc="metrics"):
-            pred_file = prediction_path(output_dir, row)
+            pred_file = prediction_path(output_dir, row, args)
             current_target = target_path(row, args)
             if not pred_file.exists():
                 missing.append({"index": row.get("_manifest_index"), "pred": pred_file.as_posix()})
@@ -533,10 +754,11 @@ def run_eval(rows: list[dict[str, Any]], output_dir: Path, args: argparse.Namesp
             size = Image.open(pred_file).size
             pred = load_rgb(pred_file).to(device)
             target = load_rgb(current_target, size=size).to(device)
-            current_mask = mask_path(row, args)
+            current_mask = eval_mask_path(row, args)
             mask = load_mask(current_mask, size=size).to(device) if current_mask and current_mask.exists() else None
             has_object_mask = bool(mask is not None and (mask > 0.5).any().item())
             obj_pred, obj_target = object_crop(pred, target, mask) if has_object_mask else (None, None)
+            bg_pred, bg_target = background_images(pred, target, mask) if has_object_mask else (None, None)
             record = {
                 "index": row.get("_manifest_index"),
                 "scene_id": row.get("scene_id"),
@@ -558,6 +780,15 @@ def run_eval(rows: list[dict[str, Any]], output_dir: Path, args: argparse.Namesp
                     if has_object_mask
                     else {"psnr": float("nan"), "ssim": float("nan"), "lpips": float("nan")}
                 ),
+                "background_only": (
+                    {
+                        "psnr": masked_psnr(pred, target, 1.0 - mask),
+                        "ssim": ssim(bg_pred, bg_target),
+                        "lpips": lpips_metric(bg_pred, bg_target),
+                    }
+                    if has_object_mask
+                    else {"psnr": float("nan"), "ssim": float("nan"), "lpips": float("nan")}
+                ),
             }
             records.append(record)
 
@@ -569,6 +800,7 @@ def run_eval(rows: list[dict[str, Any]], output_dir: Path, args: argparse.Namesp
             "count": len(items),
             "full_image": average_metrics(items, "full_image"),
             "object_only": average_metrics(items, "object_only"),
+            "background_only": average_metrics(items, "background_only"),
         }
         for scene_id, items in sorted(per_scene.items())
     }
@@ -579,6 +811,7 @@ def run_eval(rows: list[dict[str, Any]], output_dir: Path, args: argparse.Namesp
             "missing_count": len(missing),
             "full_image": average_metrics(records, "full_image"),
             "object_only": average_metrics(records, "object_only"),
+            "background_only": average_metrics(records, "background_only"),
         },
         "scene_averages": scene_averages,
         "missing": missing,
@@ -597,6 +830,11 @@ def write_snapshot(rows: list[dict[str, Any]], output_dir: Path, args: argparse.
         "target_fallback_key": args.target_fallback_key,
         "mask_key": args.mask_key,
         "mask_fallback_key": args.mask_fallback_key,
+        "extra_mask_keys": args.extra_mask_keys,
+        "eval_mask_key": args.eval_mask_key,
+        "tokenlight_mask_tokens": getattr(args, "tokenlight_mask_tokens", None),
+        "require_mask_input": bool(getattr(args, "require_mask_input", False)),
+        "required_mask_preflight": getattr(args, "required_mask_preflight", None),
         "attrs_key": args.attrs_key,
         "height": args.height,
         "width": args.width,
@@ -626,6 +864,8 @@ def main() -> int:
 
     rows = load_rows(Path(args.manifest), int(args.limit))
     output_dir = resolve_repo(args.output_dir)
+    if bool(getattr(args, "require_mask_input", False)):
+        args.required_mask_preflight = preflight_required_masks(rows, args)
     write_snapshot(rows, output_dir, args)
 
     completed = 0

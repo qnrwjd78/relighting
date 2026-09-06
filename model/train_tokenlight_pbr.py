@@ -13,9 +13,15 @@ from typing import Any
 import accelerate
 import torch
 import torch.nn.functional as F
+from PIL import Image
 from torch.utils.data import Sampler
 from tqdm import tqdm
 
+from model.decoder_space_loss import decoder_space_loss
+from model.illumination_latent_head import (
+    illumination_latent_head_loss,
+    load_illumination_head_checkpoint,
+)
 from model.lightoken_encoder import LightokenEncoder, attrs_from_batch
 from model.tokenlight_wan_pbr import (
     TokenLightPBRTypeEmbedding,
@@ -27,21 +33,25 @@ from model.train_tokenlight import (
     TRAIN_CONFIG_BY_MODE,
     TOKENLIGHT_DEFAULT_PROMPT,
     TokenLightWanTrainingModule,
+    VaeLatentCache,
     _append_timestamp_to_output_path,
     _apply_config_defaults,
     _as_frames,
     _call_compatible_method,
     _collect_train_metrics,
     _coerce_trainable_parameter_dtype,
+    _constructor_resume_checkpoint,
     _csv_value,
     _load_checkpoint_state_dict,
     _load_json_config,
     _mean_across_processes,
     _make_model_logger,
+    _maybe_load_full_training_state,
     _normalize_tokenlight_metadata_rows,
     _preferred_trainable_dtype,
     _resolve_weight_paths,
     _require_nonempty_light_attrs,
+    _resolve_distributed_world_size,
     _trainable_dtype_counts,
     _trainable_parameters,
     _collate_tokenlight_batch,
@@ -58,8 +68,8 @@ from model.train_tokenlight import (
 
 
 PBR_CONFIG_BY_MODE = {
-    "single": "configs/train_tokenlight_pbr_single.json",
-    "zero3": "configs/train_tokenlight_pbr_zero3.json",
+    "single": "configs/train_480/pbr.json",
+    "zero3": "configs/train_480/pbr.json",
 }
 
 
@@ -70,6 +80,24 @@ def _bool_mask(value: Any, *, batch: int, device: torch.device) -> torch.Tensor:
     if isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
         return torch.tensor(list(value), device=device, dtype=torch.bool).flatten()
     return torch.full((batch,), bool(value), device=device, dtype=torch.bool)
+
+
+def _rank0_broadcast_random_draws(batch: int, device: torch.device) -> torch.Tensor:
+    if batch <= 0:
+        return torch.empty((0,), device=device)
+    dist = torch.distributed
+    if not dist.is_available() or not dist.is_initialized() or dist.get_world_size() <= 1:
+        return torch.rand((batch,), device=device)
+
+    local_batch = torch.tensor([batch], device=device, dtype=torch.int64)
+    max_batch = local_batch.clone()
+    dist.all_reduce(max_batch, op=dist.ReduceOp.MAX)
+
+    draws = torch.empty((int(max_batch.item()),), device=device, dtype=torch.float32)
+    if dist.get_rank() == 0:
+        draws.uniform_()
+    dist.broadcast(draws, src=0)
+    return draws[:batch]
 
 
 def _masked_mse(pred: torch.Tensor, target: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
@@ -131,6 +159,56 @@ def _source_drop_log_luminance_loss(
     target_mask = mask.to(device=pred_log.device)
     target_log = target_log_luminance.to(device=pred_log.device, dtype=pred_log.dtype)[target_mask]
     return F.mse_loss(pred_log, target_log).to(device=pred.device)
+
+
+def _source_drop_illumination_loss(
+    *,
+    pred: torch.Tensor,
+    noise: torch.Tensor,
+    target_illum_latents: torch.Tensor | None,
+    mask: Any,
+    inputs: dict[str, Any],
+) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
+    head = inputs.get("tokenlight_source_drop_illum_head")
+    if head is None or target_illum_latents is None:
+        return pred.new_zeros(()), {}
+    mask = _bool_mask(mask, batch=int(pred.shape[0]), device=pred.device)
+    if not bool(mask.any()):
+        return pred.new_zeros(()), {}
+
+    try:
+        head_param = next(head.parameters())
+        head_device = head_param.device
+        head_dtype = head_param.dtype
+    except StopIteration:
+        head_device = pred.device
+        head_dtype = pred.dtype
+
+    pred_x0 = noise - pred
+    pred_illum = head(pred_x0[mask].to(device=head_device, dtype=head_dtype))
+    target = target_illum_latents.to(device=pred_illum.device, dtype=pred_illum.dtype)[mask]
+    if tuple(pred_illum.shape) != tuple(target.shape):
+        raise ValueError(
+            "Source-drop illumination target shape mismatch: "
+            f"pred={tuple(pred_illum.shape)} target={tuple(target.shape)}. "
+            "Build the illumination cache at the same resolution as training."
+        )
+
+    config = inputs.get("tokenlight_source_drop_illum_head_config")
+    mean = inputs.get("tokenlight_source_drop_illum_latent_mean")
+    std = inputs.get("tokenlight_source_drop_illum_latent_std")
+    loss, metrics = illumination_latent_head_loss(
+        pred_illum,
+        target,
+        multiscale_weights=getattr(config, "multiscale_weights", (1.0, 0.5, 0.25)),
+        cosine_weight=float(getattr(config, "cosine_weight", 0.1)),
+        mean=mean,
+        std=std,
+        normalize=bool(inputs.get("tokenlight_source_drop_illum_latent_normalize", True)),
+        norm_eps=float(inputs.get("tokenlight_source_drop_illum_latent_norm_eps", 1e-6)),
+        loss_type=getattr(config, "loss_type", "mse"),
+    )
+    return loss.to(device=pred.device), metrics
 
 
 def _parse_pbr_streams(value: Any) -> list[str]:
@@ -196,6 +274,28 @@ def _parse_pbr_stream_map(value: Any, *, cast=str) -> dict[str, Any]:
     return result
 
 
+def _floating_module_dtype_counts(module: torch.nn.Module | None) -> dict[str, int]:
+    if module is None:
+        return {}
+    counts: dict[str, int] = {}
+    for parameter in module.parameters():
+        if parameter.is_floating_point():
+            counts[str(parameter.dtype)] = counts.get(str(parameter.dtype), 0) + int(parameter.numel())
+    return counts
+
+
+def _coerce_floating_module_dtype(module: torch.nn.Module | None, dtype: torch.dtype) -> dict[str, int]:
+    before = _floating_module_dtype_counts(module)
+    if module is None:
+        return before
+    for parameter in module.parameters():
+        if parameter.is_floating_point() and parameter.dtype != dtype:
+            parameter.data = parameter.data.to(dtype=dtype)
+            if parameter.grad is not None:
+                parameter.grad.data = parameter.grad.data.to(dtype=dtype)
+    return before
+
+
 def _pbr_latent_items(
     stream_latents: Mapping[str, torch.Tensor] | Sequence[tuple[str, torch.Tensor]] | None,
     legacy_latents: torch.Tensor | None,
@@ -241,6 +341,8 @@ def PBRFlowMatchSFTLoss(pipe, **inputs):
     rgb_target = pipe.scheduler.training_target(rgb_input, rgb_noise, timestep)
 
     pbr_targets: dict[str, torch.Tensor] = {}
+    pbr_inputs: dict[str, torch.Tensor] = {}
+    pbr_noises: dict[str, torch.Tensor] = {}
     pbr_masks: dict[str, torch.Tensor] = {}
     pbr_latents: dict[str, torch.Tensor] = {}
     pbr_items, legacy_pbr_input = _pbr_latent_items(
@@ -261,6 +363,8 @@ def PBRFlowMatchSFTLoss(pipe, **inputs):
         pbr_noise = torch.randn_like(pbr_input) * inputs.get("noise_scale", 1.0)
         noisy_pbr = pipe.scheduler.add_noise(pbr_input, pbr_noise, timestep)
         pbr_targets[stream_name] = pipe.scheduler.training_target(pbr_input, pbr_noise, timestep)
+        pbr_inputs[stream_name] = pbr_input
+        pbr_noises[stream_name] = pbr_noise
         pbr_masks[stream_name] = pbr_mask
         mask = pbr_mask.view(-1, 1, 1, 1, 1)
         pbr_latents[stream_name] = torch.where(mask, noisy_pbr, pbr_input)
@@ -281,23 +385,58 @@ def PBRFlowMatchSFTLoss(pipe, **inputs):
 
     log_luminance_target = inputs.get("tokenlight_log_luminance_target")
     source_drop_log_luminance_mask = inputs.get("tokenlight_source_drop_log_luminance_mask")
+    source_drop_illum_target = inputs.get("tokenlight_source_drop_illum_target_latents")
 
     if "first_frame_latents" in inputs:
         rgb_pred = rgb_pred[:, :, 1:]
         rgb_target = rgb_target[:, :, 1:]
+        rgb_clean_for_reconstruction = rgb_input[:, :, 1:]
         rgb_noise_for_reconstruction = rgb_noise[:, :, 1:]
         if isinstance(log_luminance_target, torch.Tensor):
             log_luminance_target = log_luminance_target[:, :, 1:]
+        if isinstance(source_drop_illum_target, torch.Tensor):
+            source_drop_illum_target = source_drop_illum_target[:, :, 1:]
     else:
         rgb_noise_for_reconstruction = rgb_noise
+        rgb_clean_for_reconstruction = rgb_input
 
-    rgb_loss = _weighted_mse(rgb_pred, rgb_target, inputs.get("tokenlight_rgb_loss_weight"))
+    rgb_latent_raw = _weighted_mse(rgb_pred, rgb_target, inputs.get("tokenlight_rgb_loss_weight"))
+    rgb_latent_weight = float(inputs.get("tokenlight_rgb_latent_loss_weight", 1.0))
+    rgb_loss = rgb_latent_weight * rgb_latent_raw
     loss = rgb_loss
     loss_metrics = {
         "train/pbr/rgb_loss": rgb_loss.detach(),
+        "train/pbr/rgb_latent_raw_mse": rgb_latent_raw.detach(),
     }
+    rgb_decoder_weight = float(inputs.get("tokenlight_rgb_decoder_loss_weight", 0.0))
+    if rgb_decoder_weight != 0.0:
+        rgb_decoder_raw = decoder_space_loss(
+            pipe,
+            pred_x0_latents=rgb_noise_for_reconstruction - rgb_pred,
+            target_video=inputs.get("tokenlight_rgb_decoder_target_video"),
+            target_latents=(
+                None
+                if inputs.get("tokenlight_rgb_decoder_target_video") is not None
+                else rgb_clean_for_reconstruction
+            ),
+            transform=inputs.get("tokenlight_rgb_decoder_transform", "rgb"),
+            loss_type=inputs.get("tokenlight_decoder_loss_type", "mse"),
+            sample_weights=inputs.get("tokenlight_rgb_loss_weight"),
+            tiled=bool(inputs.get("tokenlight_decoder_tiled", False)),
+            tile_size=inputs.get("tile_size", (30, 52)),
+            tile_stride=inputs.get("tile_stride", (15, 26)),
+            luminance_eps=float(inputs.get("tokenlight_decoder_luminance_eps", 1e-3)),
+            charbonnier_eps=float(inputs.get("tokenlight_decoder_charbonnier_eps", 1e-3)),
+        )
+        rgb_decoder_loss = rgb_decoder_weight * rgb_decoder_raw
+        loss = loss + rgb_decoder_loss
+        loss_metrics["train/pbr/rgb_decoder_loss"] = rgb_decoder_loss.detach()
+        loss_metrics["train/pbr/rgb_decoder_raw"] = rgb_decoder_raw.detach()
     if pbr_pred is not None and pbr_targets:
         pbr_pred_map = pbr_pred if isinstance(pbr_pred, Mapping) else {"pbr": pbr_pred}
+        pbr_latent_weight = float(inputs.get("tokenlight_pbr_latent_loss_weight", 1.0))
+        pbr_decoder_weight = float(inputs.get("tokenlight_pbr_decoder_loss_weight", 0.0))
+        decoder_transforms = inputs.get("tokenlight_pbr_decoder_transforms", {})
         for stream_name, pbr_target in pbr_targets.items():
             stream_pred = pbr_pred_map.get(stream_name)
             if stream_pred is None:
@@ -307,10 +446,47 @@ def PBRFlowMatchSFTLoss(pipe, **inputs):
                 pbr_target,
                 pbr_masks[stream_name],
             )
-            pbr_weighted_loss = _pbr_stream_loss_weight(inputs, stream_name) * pbr_raw_loss
+            stream_weight = _pbr_stream_loss_weight(inputs, stream_name)
+            pbr_weighted_loss = pbr_latent_weight * stream_weight * pbr_raw_loss
             loss = loss + pbr_weighted_loss
+            loss_metrics[f"train/pbr/{stream_name}_latent_loss"] = pbr_weighted_loss.detach()
             loss_metrics[f"train/pbr/{stream_name}_loss"] = pbr_weighted_loss.detach()
             loss_metrics[f"train/pbr/{stream_name}_raw_mse"] = pbr_raw_loss.detach()
+            if pbr_decoder_weight != 0.0:
+                stream_mask = pbr_masks[stream_name]
+                if bool(stream_mask.any()):
+                    transform = (
+                        decoder_transforms.get(stream_name, "rgb")
+                        if isinstance(decoder_transforms, Mapping)
+                        else "rgb"
+                    )
+                    decoder_target_videos = inputs.get("tokenlight_pbr_decoder_target_videos", {})
+                    raw_target_video = decoder_target_videos.get(stream_name)
+                    if raw_target_video is not None:
+                        raw_target_video = raw_target_video[
+                            stream_mask.to(device=raw_target_video.device)
+                        ]
+                    decoder_raw = decoder_space_loss(
+                        pipe,
+                        pred_x0_latents=(pbr_noises[stream_name] - stream_pred)[stream_mask],
+                        target_video=raw_target_video,
+                        target_latents=(
+                            None
+                            if raw_target_video is not None
+                            else pbr_inputs[stream_name][stream_mask]
+                        ),
+                        transform=transform,
+                        loss_type=inputs.get("tokenlight_decoder_loss_type", "mse"),
+                        tiled=bool(inputs.get("tokenlight_decoder_tiled", False)),
+                        tile_size=inputs.get("tile_size", (30, 52)),
+                        tile_stride=inputs.get("tile_stride", (15, 26)),
+                        luminance_eps=float(inputs.get("tokenlight_decoder_luminance_eps", 1e-3)),
+                        charbonnier_eps=float(inputs.get("tokenlight_decoder_charbonnier_eps", 1e-3)),
+                    )
+                    decoder_weighted = pbr_decoder_weight * stream_weight * decoder_raw
+                    loss = loss + decoder_weighted
+                    loss_metrics[f"train/pbr/{stream_name}_decoder_loss"] = decoder_weighted.detach()
+                    loss_metrics[f"train/pbr/{stream_name}_decoder_raw"] = decoder_raw.detach()
     if source_drop_log_luminance_mask is not None:
         log_luminance_weight = float(inputs.get("tokenlight_source_drop_log_luminance_loss_weight", 0.0))
         if log_luminance_weight > 0:
@@ -326,6 +502,21 @@ def PBRFlowMatchSFTLoss(pipe, **inputs):
             loss = loss + log_luminance_weighted_loss
             loss_metrics["train/pbr/log_luminance_loss"] = log_luminance_weighted_loss.detach()
             loss_metrics["train/pbr/log_luminance_raw_mse"] = log_luminance_loss.detach()
+        illum_weight = float(inputs.get("tokenlight_source_drop_illum_loss_weight", 0.0))
+        if illum_weight > 0 and inputs.get("tokenlight_source_drop_illum_head") is not None:
+            illum_loss, illum_metrics = _source_drop_illumination_loss(
+                pred=rgb_pred,
+                noise=rgb_noise_for_reconstruction,
+                target_illum_latents=source_drop_illum_target,
+                mask=source_drop_log_luminance_mask,
+                inputs=inputs,
+            )
+            illum_weighted_loss = illum_weight * illum_loss
+            loss = loss + illum_weighted_loss
+            loss_metrics["train/pbr/illum_loss"] = illum_weighted_loss.detach()
+            loss_metrics["train/pbr/illum_raw_loss"] = illum_loss.detach()
+            for key, value in illum_metrics.items():
+                loss_metrics[f"train/pbr/illum_{key}"] = value.detach()
 
     training_weight = pipe.scheduler.training_weight(timestep)
     if not isinstance(training_weight, torch.Tensor):
@@ -368,6 +559,9 @@ class TokenLightPBRWanTrainingModule(TokenLightWanTrainingModule):
         tokenlight_pbr_streams: Any = None,
         tokenlight_pbr_stream_image_keys: Any = None,
         tokenlight_pbr_stream_loss_weights: Any = None,
+        tokenlight_pbr_latent_loss_weight: float = 1.0,
+        tokenlight_pbr_decoder_loss_weight: float = 0.0,
+        tokenlight_pbr_decoder_transforms: Any = None,
         tokenlight_pbr_default_mode: str = "target",
         tokenlight_pbr_conditioning_strategy: str = "metadata",
         tokenlight_pbr_unirelight_target_prob: float = 0.70,
@@ -375,6 +569,13 @@ class TokenLightPBRWanTrainingModule(TokenLightWanTrainingModule):
         tokenlight_pbr_unirelight_source_drop_prob: float = 0.12,
         tokenlight_source_drop_rgb_loss_weight: float = 0.0,
         tokenlight_source_drop_log_luminance_loss_weight: float = 1.0,
+        tokenlight_source_drop_illum_loss_weight: float = 1.0,
+        tokenlight_source_drop_illum_head_path: str | None = None,
+        tokenlight_source_drop_illum_cache_dir: str | None = None,
+        tokenlight_source_drop_illum_cache_key: str = "video",
+        tokenlight_source_drop_illum_cache_open_shards: int = 16,
+        tokenlight_source_drop_illum_latent_normalize: bool = True,
+        tokenlight_source_drop_illum_latent_norm_eps: float = 1e-6,
         tokenlight_log_luminance_eps: float = 1e-3,
         tokenlight_log_luminance_decode_tiled: bool = False,
         **kwargs,
@@ -406,12 +607,22 @@ class TokenLightPBRWanTrainingModule(TokenLightWanTrainingModule):
         self.tokenlight_pbr_stream_loss_weights = {
             name: float(loss_weight_map.get(name, self.tokenlight_pbr_loss_weight)) for name in pbr_streams
         }
+        self.tokenlight_pbr_latent_loss_weight = float(tokenlight_pbr_latent_loss_weight)
+        self.tokenlight_pbr_decoder_loss_weight = float(tokenlight_pbr_decoder_loss_weight)
+        decoder_transform_map = _parse_pbr_stream_map(tokenlight_pbr_decoder_transforms, cast=str)
+        self.tokenlight_pbr_decoder_transforms = {
+            name: str(decoder_transform_map.get(name, "rgb")) for name in pbr_streams
+        }
         self.tokenlight_pbr_conditioning_strategy = str(tokenlight_pbr_conditioning_strategy)
         self.tokenlight_pbr_unirelight_target_prob = float(tokenlight_pbr_unirelight_target_prob)
         self.tokenlight_pbr_unirelight_condition_prob = float(tokenlight_pbr_unirelight_condition_prob)
         self.tokenlight_pbr_unirelight_source_drop_prob = float(tokenlight_pbr_unirelight_source_drop_prob)
         self.tokenlight_source_drop_rgb_loss_weight = float(tokenlight_source_drop_rgb_loss_weight)
         self.tokenlight_source_drop_log_luminance_loss_weight = float(tokenlight_source_drop_log_luminance_loss_weight)
+        self.tokenlight_source_drop_illum_loss_weight = float(tokenlight_source_drop_illum_loss_weight)
+        self.tokenlight_source_drop_illum_cache_key = str(tokenlight_source_drop_illum_cache_key or "video")
+        self.tokenlight_source_drop_illum_latent_normalize = bool(tokenlight_source_drop_illum_latent_normalize)
+        self.tokenlight_source_drop_illum_latent_norm_eps = float(tokenlight_source_drop_illum_latent_norm_eps)
         self.tokenlight_log_luminance_eps = float(tokenlight_log_luminance_eps)
         self.tokenlight_log_luminance_decode_tiled = bool(tokenlight_log_luminance_decode_tiled)
         self.tokenlight_attrs_key = kwargs.get("tokenlight_attrs_key", "attrs_json")
@@ -438,6 +649,32 @@ class TokenLightPBRWanTrainingModule(TokenLightWanTrainingModule):
             token_dim,
             num_types=tokenlight_pbr_type_count(len(self.tokenlight_pbr_streams)),
         )
+        self.source_drop_illum_head = None
+        self.source_drop_illum_head_config = None
+        self.source_drop_illum_latent_mean = None
+        self.source_drop_illum_latent_std = None
+        if tokenlight_source_drop_illum_head_path not in (None, "", "None", "none", "null"):
+            head, head_config, head_extra = load_illumination_head_checkpoint(
+                tokenlight_source_drop_illum_head_path,
+                map_location="cpu",
+            )
+            head.eval()
+            for param in head.parameters():
+                param.requires_grad_(False)
+            head_dtype = getattr(self.pipe, "torch_dtype", torch.bfloat16)
+            if isinstance(head_dtype, torch.dtype) and head_dtype.is_floating_point:
+                _coerce_floating_module_dtype(head, head_dtype)
+            self.source_drop_illum_head = head
+            self.source_drop_illum_head_config = head_config
+            self.source_drop_illum_latent_mean = head_extra.get("latent_mean")
+            self.source_drop_illum_latent_std = head_extra.get("latent_std")
+            print(f"Loaded source-drop illumination head: {tokenlight_source_drop_illum_head_path}")
+        self.source_drop_illum_cache = None
+        if tokenlight_source_drop_illum_cache_dir not in (None, "", "None", "none", "null"):
+            self.source_drop_illum_cache = VaeLatentCache(
+                [str(tokenlight_source_drop_illum_cache_dir)],
+                max_open_shards=int(tokenlight_source_drop_illum_cache_open_shards),
+            )
         checkpoint_state = _load_checkpoint_state_dict(kwargs.get("lora_checkpoint") or kwargs.get("resume_from_checkpoint"))
         _load_matching_module_state(self.light_encoder, checkpoint_state, "light_encoder")
         _load_matching_module_state(self.tokenlight_type_embedding, checkpoint_state, "tokenlight_type_embedding")
@@ -474,6 +711,165 @@ class TokenLightPBRWanTrainingModule(TokenLightWanTrainingModule):
             raise ValueError(f"Expected {batch} `{pbr_key}` images for PBR stream `{stream_name}`")
         return [_as_frames(item) for item in pbr]
 
+    def _cached_pbr_latents_from_data(self, data, batch: int) -> dict[str, torch.Tensor]:
+        pbr_latents = {}
+        for stream_name in self.tokenlight_pbr_streams:
+            pbr_key = self.tokenlight_pbr_stream_image_keys[stream_name]
+            latent_key = f"_tokenlight_{pbr_key}_latents"
+            if latent_key not in data:
+                raise KeyError(
+                    f"Cached PBR stream `{stream_name}` is missing `{latent_key}`. "
+                    f"Build the VAE cache with image key `{pbr_key}` and pass it in --data_file_keys."
+                )
+            pbr_latents[stream_name] = self._stack_cached_latents(
+                data.get(latent_key),
+                batch=batch,
+                name=f"pbr_{stream_name}",
+            )
+        return pbr_latents
+
+    def _cached_target_videos_from_paths(self, data, batch: int):
+        videos = data.get("video")
+        if isinstance(videos, str):
+            videos = [videos]
+        if not isinstance(videos, list) or len(videos) != batch:
+            raise ValueError(f"Expected {batch} cached target image paths for log-luminance loss")
+        base_path = self.dataset_base_path or Path(".")
+        result = []
+        for item in videos:
+            if not isinstance(item, str):
+                result.append(_as_frames(item))
+                continue
+            path = Path(item)
+            if not path.is_absolute():
+                path = base_path / path
+            with Image.open(path) as image:
+                result.append([image.convert("RGB")])
+        return result
+
+    def _source_drop_illum_latents_from_cache(self, data, batch: int) -> torch.Tensor | None:
+        direct = data.get("_tokenlight_source_drop_illum_latents")
+        if direct is not None:
+            return self._stack_cached_latents(direct, batch=batch, name="illum_target")
+        if self.source_drop_illum_cache is None:
+            return None
+        values = data.get(self.tokenlight_source_drop_illum_cache_key)
+        if isinstance(values, str):
+            values = [values]
+        if not isinstance(values, list) or len(values) != batch:
+            raise ValueError(
+                f"Expected {batch} `{self.tokenlight_source_drop_illum_cache_key}` paths "
+                "for source-drop illumination cache"
+            )
+        tensors = [
+            self.source_drop_illum_cache.load(str(value), dataset_base_path=self.dataset_base_path)
+            for value in values
+        ]
+        return torch.stack(tensors, dim=0)
+
+    def _attach_pbr_latents_to_inputs(
+        self,
+        inputs_shared: dict[str, Any],
+        data,
+        batch: int,
+        pbr_latents: dict[str, torch.Tensor],
+        *,
+        cached: bool,
+    ):
+        pbr_device = next(iter(pbr_latents.values())).device
+        pbr_target, source_drop = self._sample_conditioning_modes(
+            data,
+            batch,
+            pbr_device,
+        )
+        if self.tokenlight_pbr_legacy_stream:
+            inputs_shared["tokenlight_pbr_input_latents"] = pbr_latents["pbr"]
+            inputs_shared["tokenlight_pbr_is_target"] = pbr_target
+            inputs_shared["tokenlight_pbr_loss_weight"] = self.tokenlight_pbr_stream_loss_weights["pbr"]
+        else:
+            inputs_shared["tokenlight_pbr_input_latents_map"] = pbr_latents
+            inputs_shared["tokenlight_pbr_is_target_map"] = {
+                stream_name: pbr_target for stream_name in self.tokenlight_pbr_streams
+            }
+            inputs_shared["tokenlight_pbr_loss_weights"] = dict(self.tokenlight_pbr_stream_loss_weights)
+        inputs_shared["tokenlight_source_drop_log_luminance_mask"] = source_drop
+        inputs_shared["tokenlight_source_drop_log_luminance_loss_weight"] = (
+            self.tokenlight_source_drop_log_luminance_loss_weight
+        )
+        if self.source_drop_illum_head is not None:
+            inputs_shared["tokenlight_source_drop_illum_head"] = self.source_drop_illum_head
+            inputs_shared["tokenlight_source_drop_illum_head_config"] = self.source_drop_illum_head_config
+            inputs_shared["tokenlight_source_drop_illum_loss_weight"] = self.tokenlight_source_drop_illum_loss_weight
+            inputs_shared["tokenlight_source_drop_illum_latent_normalize"] = (
+                self.tokenlight_source_drop_illum_latent_normalize
+            )
+            inputs_shared["tokenlight_source_drop_illum_latent_norm_eps"] = (
+                self.tokenlight_source_drop_illum_latent_norm_eps
+            )
+            if isinstance(self.source_drop_illum_latent_mean, torch.Tensor):
+                inputs_shared["tokenlight_source_drop_illum_latent_mean"] = self.source_drop_illum_latent_mean.to(
+                    device=pbr_device,
+                    dtype=torch.float32,
+                )
+            if isinstance(self.source_drop_illum_latent_std, torch.Tensor):
+                inputs_shared["tokenlight_source_drop_illum_latent_std"] = self.source_drop_illum_latent_std.to(
+                    device=pbr_device,
+                    dtype=torch.float32,
+                )
+        inputs_shared["tokenlight_log_luminance_eps"] = self.tokenlight_log_luminance_eps
+        inputs_shared["tokenlight_log_luminance_decode_tiled"] = self.tokenlight_log_luminance_decode_tiled
+        inputs_shared["tokenlight_pbr_latent_loss_weight"] = self.tokenlight_pbr_latent_loss_weight
+        inputs_shared["tokenlight_pbr_decoder_loss_weight"] = self.tokenlight_pbr_decoder_loss_weight
+        inputs_shared["tokenlight_pbr_decoder_transforms"] = dict(self.tokenlight_pbr_decoder_transforms)
+        if self.tokenlight_pbr_decoder_loss_weight != 0.0:
+            decoder_targets = {}
+            for stream_name in self.tokenlight_pbr_streams:
+                image_key = self.tokenlight_pbr_stream_image_keys[stream_name]
+                value = data.get(image_key)
+                if value is None:
+                    raise KeyError(
+                        f"PBR decoder stream `{stream_name}` requires raw target PNG key `{image_key}`"
+                    )
+                decoder_targets[stream_name] = self._load_decoder_target_video_batch(
+                    value,
+                    batch=batch,
+                    name=image_key,
+                    height=int(inputs_shared["height"]),
+                    width=int(inputs_shared["width"]),
+                )
+            inputs_shared["tokenlight_pbr_decoder_target_videos"] = decoder_targets
+        if bool(source_drop.any()):
+            if "tokenlight_source_latents" in inputs_shared:
+                source_mask = source_drop.view(-1, 1, 1, 1, 1)
+                inputs_shared["tokenlight_source_latents"] = torch.where(
+                    source_mask,
+                    torch.zeros_like(inputs_shared["tokenlight_source_latents"]),
+                    inputs_shared["tokenlight_source_latents"],
+                )
+            rgb_weights = torch.ones((batch,), device=source_drop.device, dtype=torch.float32)
+            rgb_weights = torch.where(
+                source_drop,
+                torch.full_like(rgb_weights, self.tokenlight_source_drop_rgb_loss_weight),
+                rgb_weights,
+            )
+            inputs_shared["tokenlight_rgb_loss_weight"] = rgb_weights
+            if self.source_drop_illum_head is not None and self.tokenlight_source_drop_illum_loss_weight > 0:
+                target_illum = self._source_drop_illum_latents_from_cache(data, batch)
+                if target_illum is None:
+                    raise ValueError(
+                        "Source-drop illumination head is enabled, but no illumination cache was provided. "
+                        "Pass --tokenlight_source_drop_illum_cache_dir."
+                    )
+                inputs_shared["tokenlight_source_drop_illum_target_latents"] = self._stack_cached_latents(
+                    target_illum,
+                    batch=batch,
+                    name="illum_target",
+                )
+            if self.tokenlight_source_drop_log_luminance_loss_weight > 0:
+                target_videos = self._cached_target_videos_from_paths(data, batch) if cached else data["video"]
+                inputs_shared["tokenlight_log_luminance_target"] = self._log_luminance_target_from_videos(target_videos)
+        return inputs_shared
+
     def _sample_conditioning_modes(self, data, batch: int, device: torch.device) -> tuple[torch.Tensor, torch.Tensor]:
         metadata_target = self._pbr_target_mask_from_data(data, batch, device)
         source_drop = torch.zeros((batch,), device=device, dtype=torch.bool)
@@ -491,7 +887,7 @@ class TokenLightPBRWanTrainingModule(TokenLightWanTrainingModule):
         condition_boundary = (
             self.tokenlight_pbr_unirelight_target_prob + self.tokenlight_pbr_unirelight_condition_prob
         ) / total
-        draws = torch.rand((batch,), device=device)
+        draws = _rank0_broadcast_random_draws(batch, device)
         pbr_target = draws < target_boundary
         source_drop = draws >= condition_boundary
         return pbr_target, source_drop
@@ -523,44 +919,14 @@ class TokenLightPBRWanTrainingModule(TokenLightWanTrainingModule):
             )
             for stream_name in self.tokenlight_pbr_streams
         }
-        pbr_device = next(iter(pbr_latents.values())).device
-        pbr_target, source_drop = self._sample_conditioning_modes(
-            data,
-            batch,
-            pbr_device,
-        )
-        if self.tokenlight_pbr_legacy_stream:
-            inputs_shared["tokenlight_pbr_input_latents"] = pbr_latents["pbr"]
-            inputs_shared["tokenlight_pbr_is_target"] = pbr_target
-            inputs_shared["tokenlight_pbr_loss_weight"] = self.tokenlight_pbr_stream_loss_weights["pbr"]
-        else:
-            inputs_shared["tokenlight_pbr_input_latents_map"] = pbr_latents
-            inputs_shared["tokenlight_pbr_is_target_map"] = {
-                stream_name: pbr_target for stream_name in self.tokenlight_pbr_streams
-            }
-            inputs_shared["tokenlight_pbr_loss_weights"] = dict(self.tokenlight_pbr_stream_loss_weights)
-        inputs_shared["tokenlight_source_drop_log_luminance_mask"] = source_drop
-        inputs_shared["tokenlight_source_drop_log_luminance_loss_weight"] = (
-            self.tokenlight_source_drop_log_luminance_loss_weight
-        )
-        inputs_shared["tokenlight_log_luminance_eps"] = self.tokenlight_log_luminance_eps
-        inputs_shared["tokenlight_log_luminance_decode_tiled"] = self.tokenlight_log_luminance_decode_tiled
-        if bool(source_drop.any()):
-            if "tokenlight_source_latents" in inputs_shared:
-                source_mask = source_drop.view(-1, 1, 1, 1, 1)
-                inputs_shared["tokenlight_source_latents"] = torch.where(
-                    source_mask,
-                    torch.zeros_like(inputs_shared["tokenlight_source_latents"]),
-                    inputs_shared["tokenlight_source_latents"],
-                )
-            rgb_weights = torch.ones((batch,), device=source_drop.device, dtype=torch.float32)
-            rgb_weights = torch.where(
-                source_drop,
-                torch.full_like(rgb_weights, self.tokenlight_source_drop_rgb_loss_weight),
-                rgb_weights,
-            )
-            inputs_shared["tokenlight_rgb_loss_weight"] = rgb_weights
-            inputs_shared["tokenlight_log_luminance_target"] = self._log_luminance_target_from_videos(data["video"])
+        inputs_shared = self._attach_pbr_latents_to_inputs(inputs_shared, data, batch, pbr_latents, cached=False)
+        return inputs_shared, inputs_posi, inputs_nega
+
+    def _cached_batched_inputs(self, data):
+        inputs_shared, inputs_posi, inputs_nega = super()._cached_batched_inputs(data)
+        batch = self._batch_size_from_data(data)
+        pbr_latents = self._cached_pbr_latents_from_data(data, batch)
+        inputs_shared = self._attach_pbr_latents_to_inputs(inputs_shared, data, batch, pbr_latents, cached=True)
         return inputs_shared, inputs_posi, inputs_nega
 
     def get_pipeline_inputs(self, data):
@@ -578,6 +944,17 @@ class TokenLightPBRWanTrainingModule(TokenLightWanTrainingModule):
             inputs_shared["tokenlight_pbr_is_target"] = str(
                 data.get(self.tokenlight_pbr_mode_key, self.tokenlight_pbr_default_mode)
             ).lower() not in {"condition", "cond", "input", "clean", "provided"}
+            if self.tokenlight_pbr_decoder_loss_weight != 0.0:
+                inputs_shared["tokenlight_pbr_decoder_target_videos"] = {
+                    stream_name: self._load_decoder_target_video_batch(
+                        data[self.tokenlight_pbr_stream_image_keys[stream_name]],
+                        batch=1,
+                        name=self.tokenlight_pbr_stream_image_keys[stream_name],
+                        height=int(inputs_shared["height"]),
+                        width=int(inputs_shared["width"]),
+                    )
+                    for stream_name in pbr_images
+                }
         return inputs_shared, inputs_posi, inputs_nega
 
     def _prepare_tokenlight_inputs(self, inputs, data):
@@ -605,18 +982,19 @@ class TokenLightPBRWanTrainingModule(TokenLightWanTrainingModule):
         return inputs_shared, inputs_posi, inputs_nega
 
 
-def _parse_task_batch(value: str | dict[str, int] | None) -> dict[str, int]:
-    if value is None:
-        return {"single_light": 2, "double_light": 2, "ambient_only": 1}
+def _parse_task_batch(value: str | dict[str, int] | None) -> dict[str, int] | None:
+    if value in (None, "", "none", "None", "null"):
+        return None
     if isinstance(value, dict):
-        return {str(key): int(item) for key, item in value.items() if int(item) > 0}
+        result = {str(key): int(item) for key, item in value.items() if int(item) > 0}
+        return result or None
     result = {}
     for item in str(value).split(","):
         if not item.strip():
             continue
         key, count = item.split(":", 1)
         result[key.strip()] = int(count)
-    return {key: count for key, count in result.items() if count > 0}
+    return {key: count for key, count in result.items() if count > 0} or None
 
 
 class BalancedTaskBatchSampler(Sampler[list[int]]):
@@ -665,7 +1043,7 @@ def _configure_deepspeed_batch_size(accelerator, args, batch_size: int) -> None:
     if not isinstance(ds_config, dict):
         return
     grad_accum = int(getattr(args, "gradient_accumulation_steps", 1) or 1)
-    num_processes = int(getattr(accelerator, "num_processes", 1) or 1)
+    num_processes = _resolve_distributed_world_size(accelerator)
     ds_config["train_micro_batch_size_per_gpu"] = int(batch_size)
     ds_config["gradient_accumulation_steps"] = grad_accum
     ds_config["train_batch_size"] = int(batch_size) * grad_accum * num_processes
@@ -673,6 +1051,7 @@ def _configure_deepspeed_batch_size(accelerator, args, batch_size: int) -> None:
         "DeepSpeed batch setup: "
         f"train_micro_batch_size_per_gpu={ds_config['train_micro_batch_size_per_gpu']}, "
         f"gradient_accumulation_steps={ds_config['gradient_accumulation_steps']}, "
+        f"num_processes={num_processes}, "
         f"train_batch_size={ds_config['train_batch_size']}"
     )
 
@@ -700,6 +1079,13 @@ def wan_pbr_parser(train_mode: str = "single") -> argparse.ArgumentParser:
     parser.add_argument("--tokenlight_pbr_streams", default=None)
     parser.add_argument("--tokenlight_pbr_stream_image_keys", default=None)
     parser.add_argument("--tokenlight_pbr_stream_loss_weights", default=None)
+    parser.add_argument("--tokenlight_pbr_latent_loss_weight", type=float, default=1.0)
+    parser.add_argument("--tokenlight_pbr_decoder_loss_weight", type=float, default=0.0)
+    parser.add_argument(
+        "--tokenlight_pbr_decoder_transforms",
+        default=None,
+        help="Per-stream decoder transform, e.g. depth:illuminance,normal:rgb.",
+    )
     parser.add_argument("--tokenlight_pbr_default_mode", choices=("target", "condition"), default="target")
     parser.add_argument("--tokenlight_pbr_conditioning_strategy", default="metadata")
     parser.add_argument("--tokenlight_pbr_unirelight_target_prob", type=float, default=0.70)
@@ -707,8 +1093,49 @@ def wan_pbr_parser(train_mode: str = "single") -> argparse.ArgumentParser:
     parser.add_argument("--tokenlight_pbr_unirelight_source_drop_prob", type=float, default=0.12)
     parser.add_argument("--tokenlight_source_drop_rgb_loss_weight", type=float, default=0.0)
     parser.add_argument("--tokenlight_source_drop_log_luminance_loss_weight", type=float, default=1.0)
+    parser.add_argument("--tokenlight_source_drop_illum_loss_weight", type=float, default=1.0)
+    parser.add_argument("--tokenlight_source_drop_illum_head_path", default=None)
+    parser.add_argument("--tokenlight_source_drop_illum_cache_dir", default=None)
+    parser.add_argument("--tokenlight_source_drop_illum_cache_key", default="video")
+    parser.add_argument("--tokenlight_source_drop_illum_cache_open_shards", type=int, default=16)
+    parser.add_argument("--tokenlight_source_drop_illum_latent_normalize", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--tokenlight_source_drop_illum_latent_norm_eps", type=float, default=1e-6)
     parser.add_argument("--tokenlight_log_luminance_eps", type=float, default=1e-3)
     parser.add_argument("--tokenlight_log_luminance_decode_tiled", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument(
+        "--repartition_label",
+        default=None,
+        help="Optional output label for full-checkpoint repartitioning, e.g. step-8000.",
+    )
+    parser.add_argument(
+        "--repartition_overwrite",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Allow a repartition output full checkpoint directory to be replaced.",
+    )
+    parser.add_argument(
+        "--universal_checkpoint_dir",
+        default=None,
+        help="Optional directory for the intermediate DeepSpeed Universal checkpoint.",
+    )
+    parser.add_argument(
+        "--universal_overwrite",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Rebuild the intermediate Universal checkpoint if it already exists.",
+    )
+    parser.add_argument(
+        "--universal_num_extract_workers",
+        type=int,
+        default=1,
+        help="Worker count for DeepSpeed ds_to_universal ZeRO fragment extraction.",
+    )
+    parser.add_argument(
+        "--universal_num_merge_workers",
+        type=int,
+        default=1,
+        help="Worker count for DeepSpeed ds_to_universal slice merging.",
+    )
     return parser
 
 
@@ -763,28 +1190,47 @@ def launch_tokenlight_pbr_training_task(
     del kwargs
     batch_size = int(args.batch_size)
     task_batch = _parse_task_batch(args.balanced_task_batch)
-    if sum(task_batch.values()) != batch_size:
-        raise ValueError(f"balanced_task_batch sums to {sum(task_batch.values())}, but batch_size={batch_size}")
 
     trainable_dtype = _preferred_trainable_dtype(model)
     before_dtype_counts = _coerce_trainable_parameter_dtype(model, trainable_dtype)
     after_dtype_counts = _trainable_dtype_counts(model)
+    illum_head = getattr(model, "source_drop_illum_head", None)
+    illum_head_before_dtype_counts = _coerce_floating_module_dtype(illum_head, trainable_dtype)
+    illum_head_after_dtype_counts = _floating_module_dtype_counts(illum_head)
     if accelerator.is_main_process:
         print(
             "Trainable parameter dtype setup: "
             f"target={trainable_dtype}, before={before_dtype_counts}, after={after_dtype_counts}"
         )
+        if illum_head is not None:
+            print(
+                "Source-drop illumination head dtype setup: "
+                f"target={trainable_dtype}, before={illum_head_before_dtype_counts}, "
+                f"after={illum_head_after_dtype_counts}"
+            )
 
     optimizer_class = get_optimizer_class(args.customized_optimizer)
     optimizer = optimizer_class(_trainable_parameters(model), lr=args.learning_rate, weight_decay=args.weight_decay)
     scheduler = torch.optim.lr_scheduler.ConstantLR(optimizer)
-    batch_sampler = BalancedTaskBatchSampler(dataset.data, task_batch, seed=int(args.balanced_batch_seed))
-    dataloader = torch.utils.data.DataLoader(
-        dataset,
-        batch_sampler=batch_sampler,
-        collate_fn=_collate_tokenlight_batch,
-        num_workers=args.dataset_num_workers,
-    )
+    if task_batch is None:
+        dataloader = torch.utils.data.DataLoader(
+            dataset,
+            batch_size=batch_size,
+            shuffle=True,
+            collate_fn=_collate_tokenlight_batch,
+            drop_last=batch_size > 1,
+            num_workers=args.dataset_num_workers,
+        )
+    else:
+        if sum(task_batch.values()) != batch_size:
+            raise ValueError(f"balanced_task_batch sums to {sum(task_batch.values())}, but batch_size={batch_size}")
+        batch_sampler = BalancedTaskBatchSampler(dataset.data, task_batch, seed=int(args.balanced_batch_seed))
+        dataloader = torch.utils.data.DataLoader(
+            dataset,
+            batch_sampler=batch_sampler,
+            collate_fn=_collate_tokenlight_batch,
+            num_workers=args.dataset_num_workers,
+        )
 
     enable_model_cpu_offload = getattr(args, "enable_model_cpu_offload", False)
     enable_optimizer_cpu_offload = getattr(args, "enable_optimizer_cpu_offload", False)
@@ -804,6 +1250,7 @@ def launch_tokenlight_pbr_training_task(
         model, optimizer, dataloader, scheduler = accelerator.prepare(model, optimizer, dataloader, scheduler)
         offload_manager = None
 
+    _maybe_load_full_training_state(args, accelerator, model_logger, model=model)
     save_training_runtime_snapshot(args, accelerator, model)
     tb_metrics = TokenLightTensorBoardMetrics(args.output_path, enabled=args.enable_tensorboard_log)
     initialize_deepspeed_gradient_checkpointing(accelerator)
@@ -825,7 +1272,17 @@ def launch_tokenlight_pbr_training_task(
                     scheduler.step()
                     metrics = _collect_train_metrics(accelerator, model, optimizer, loss)
                     optimizer.zero_grad()
-                    _call_compatible_method(model_logger, "on_step_end", accelerator, model, args.save_steps, loss=loss)
+                    _call_compatible_method(
+                        model_logger,
+                        "on_step_end",
+                        accelerator,
+                        model,
+                        args.save_steps,
+                        loss=loss,
+                        epoch=epoch_id,
+                        optimizer=optimizer,
+                        scheduler=scheduler,
+                    )
                     logger_step = getattr(model_logger, "num_steps", None)
                     if logger_step is None or int(logger_step) <= local_step:
                         local_step += 1
@@ -835,8 +1292,24 @@ def launch_tokenlight_pbr_training_task(
                     if metrics and "train/loss" in metrics:
                         iterator.set_postfix(loss=f"{metrics['train/loss']:.4f}", step=local_step)
             if args.save_steps is None:
-                _call_compatible_method(model_logger, "on_epoch_end", accelerator, model, epoch_id)
-        _call_compatible_method(model_logger, "on_training_end", accelerator, model, args.save_steps)
+                _call_compatible_method(
+                    model_logger,
+                    "on_epoch_end",
+                    accelerator,
+                    model,
+                    epoch_id,
+                    optimizer=optimizer,
+                    scheduler=scheduler,
+                )
+        _call_compatible_method(
+            model_logger,
+            "on_training_end",
+            accelerator,
+            model,
+            args.save_steps,
+            optimizer=optimizer,
+            scheduler=scheduler,
+        )
     finally:
         tb_metrics.close(accelerator)
 
@@ -874,7 +1347,7 @@ def main(train_mode: str = "single") -> None:
         extra_inputs=args.extra_inputs,
         fp8_models=args.fp8_models,
         offload_models=args.offload_models,
-        resume_from_checkpoint=getattr(args, "resume_from_checkpoint", None),
+        resume_from_checkpoint=_constructor_resume_checkpoint(getattr(args, "resume_from_checkpoint", None)),
         remove_prefix_in_ckpt=args.remove_prefix_in_ckpt,
         task=args.task,
         device="cpu" if (args.initialize_model_on_cpu or getattr(args, "enable_model_cpu_offload", False)) else accelerator.device,
@@ -896,6 +1369,9 @@ def main(train_mode: str = "single") -> None:
         tokenlight_pbr_streams=args.tokenlight_pbr_streams,
         tokenlight_pbr_stream_image_keys=args.tokenlight_pbr_stream_image_keys,
         tokenlight_pbr_stream_loss_weights=args.tokenlight_pbr_stream_loss_weights,
+        tokenlight_pbr_latent_loss_weight=args.tokenlight_pbr_latent_loss_weight,
+        tokenlight_pbr_decoder_loss_weight=args.tokenlight_pbr_decoder_loss_weight,
+        tokenlight_pbr_decoder_transforms=args.tokenlight_pbr_decoder_transforms,
         tokenlight_pbr_default_mode=args.tokenlight_pbr_default_mode,
         tokenlight_pbr_conditioning_strategy=args.tokenlight_pbr_conditioning_strategy,
         tokenlight_pbr_unirelight_target_prob=args.tokenlight_pbr_unirelight_target_prob,
@@ -903,8 +1379,23 @@ def main(train_mode: str = "single") -> None:
         tokenlight_pbr_unirelight_source_drop_prob=args.tokenlight_pbr_unirelight_source_drop_prob,
         tokenlight_source_drop_rgb_loss_weight=args.tokenlight_source_drop_rgb_loss_weight,
         tokenlight_source_drop_log_luminance_loss_weight=args.tokenlight_source_drop_log_luminance_loss_weight,
+        tokenlight_source_drop_illum_loss_weight=args.tokenlight_source_drop_illum_loss_weight,
+        tokenlight_source_drop_illum_head_path=args.tokenlight_source_drop_illum_head_path,
+        tokenlight_source_drop_illum_cache_dir=args.tokenlight_source_drop_illum_cache_dir,
+        tokenlight_source_drop_illum_cache_key=args.tokenlight_source_drop_illum_cache_key,
+        tokenlight_source_drop_illum_cache_open_shards=args.tokenlight_source_drop_illum_cache_open_shards,
+        tokenlight_source_drop_illum_latent_normalize=args.tokenlight_source_drop_illum_latent_normalize,
+        tokenlight_source_drop_illum_latent_norm_eps=args.tokenlight_source_drop_illum_latent_norm_eps,
         tokenlight_log_luminance_eps=args.tokenlight_log_luminance_eps,
         tokenlight_log_luminance_decode_tiled=args.tokenlight_log_luminance_decode_tiled,
+        tokenlight_rgb_latent_loss_weight=args.tokenlight_rgb_latent_loss_weight,
+        tokenlight_rgb_decoder_loss_weight=args.tokenlight_rgb_decoder_loss_weight,
+        tokenlight_rgb_decoder_transform=args.tokenlight_rgb_decoder_transform,
+        tokenlight_decoder_loss_type=args.tokenlight_decoder_loss_type,
+        tokenlight_decoder_tiled=args.tokenlight_decoder_tiled,
+        tokenlight_decoder_luminance_eps=args.tokenlight_decoder_luminance_eps,
+        tokenlight_decoder_charbonnier_eps=args.tokenlight_decoder_charbonnier_eps,
+        dataset_base_path=args.dataset_base_path,
     )
     model_logger = _make_model_logger(args)
     launcher_map = {

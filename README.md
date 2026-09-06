@@ -6,14 +6,23 @@ adds separate TokenLight conditioning entrypoints.
 ## Layout
 
 ```text
-data/      dataset files
-scripts/   runnable shell commands
-model/     official baseline code and TokenLight extension code
-configs/   accelerate configs
-docker/    minimal Docker image
-repos/     external repos, if needed later
-weights/   local Wan2.2-TI2V-5B weights
+model/               baseline, TokenLight, physical tasks, and shadow models
+scripts/             training, inference, preprocessing, and evaluation tools
+utils/               shared data, geometry, and evaluation helpers
+tokenlight_dataset/  EXR loading and tone mapping
+configs/             Accelerate / DeepSpeed and experiment configurations
+tests/               regression tests
+docs/                experiment and pipeline documentation
+docker/              CUDA image and Python dependencies
+data/, data_train/   local datasets and manifests (not committed)
+weights/, outputs/   local model weights and results (not committed)
+repos/, external/    local third-party checkouts / packages (not committed)
 ```
+
+See [repository contents and publishing notes](docs/REPOSITORY.md) for the
+Git exclusion policy and local dependencies. Experiment configurations refer to
+local datasets, caches, and checkpoints; update these paths before running on a
+new machine. Some comparison scripts expect this checkout at `/workspace`.
 
 ## Docker
 
@@ -45,13 +54,7 @@ Put the DiffSynth example dataset under:
 data/diffsynth_example_dataset/wanvideo/Wan2.2-TI2V-5B
 ```
 
-Then run:
-
-```bash
-bash scripts/train_wan22_ti2v_5b_lora.sh
-```
-
-The official training entrypoint is preserved as:
+The baseline training entrypoint is:
 
 ```text
 model/train.py
@@ -63,43 +66,28 @@ The official DiffSynth inference example is preserved as:
 model/infer_official.py
 ```
 
-## LoRA Train With ZeRO-3
-
-The ZeRO-3 launcher uses `configs/accelerate_zero3_cpuoffload.yaml` and
-`configs/ds_z3_cpuoffload.json`.
+Inspect the baseline arguments after installing the dependencies:
 
 ```bash
-bash scripts/train_wan22_ti2v_5b_lora_zero3.sh
+python model/train.py --help
 ```
 
-For multi-GPU:
-
-```bash
-NUM_PROCESSES=4 bash scripts/train_wan22_ti2v_5b_lora_zero3.sh
-```
-
-Useful overrides:
-
-```bash
-DATASET_BASE_PATH=data/my_dataset \
-DATASET_METADATA_PATH=data/my_dataset/metadata.csv \
-OUTPUT_PATH=model/train/my_wan22_lora \
-bash scripts/train_wan22_ti2v_5b_lora.sh
-```
+For TokenLight training with single GPU or ZeRO-3, use the entrypoints and
+experiment configurations in [TokenLight Train](#tokenlight-train) below.
 
 ## Inference
 
 Text-to-video:
 
 ```bash
-bash scripts/infer_wan22_ti2v_5b.sh \
+python model/infer.py \
   --prompt "Two cute cats wearing boxing gloves fight on a boxing ring."
 ```
 
 Image-to-video:
 
 ```bash
-bash scripts/infer_wan22_ti2v_5b.sh \
+python model/infer.py \
   --input_image data/input.png \
   --prompt "Two cute cats wearing boxing gloves fight on a boxing ring."
 ```
@@ -134,40 +122,84 @@ TokenLight training uses source/mask/light prefix tokens before the noisy Wan
 target tokens. Text prompt stays fixed; CFG/dropout is applied only to light
 tokens.
 
-Single-GPU, no ZeRO-3:
+All 480 training configurations are under `configs/train_480/`:
+
+| Experiment | RGB entrypoint | PBR entrypoint | Config |
+| --- | --- | --- | --- |
+| RGB latent loss | yes | no | `rgb.json` |
+| PBR latent loss | no | yes | `pbr.json` |
+| RGB decoder loss | yes | no | `rgb_decoder.json` |
+| PBR decoder loss | no | yes | `pbr_decoder.json` |
+
+Single GPU uses the `*_single.py` entrypoint:
 
 ```bash
-bash scripts/train_tokenlight_wan22_lora_single.sh
+python model/train_tokenlight_single.py --config configs/train_480/rgb.json
+python model/train_tokenlight_pbr_single.py --config configs/train_480/pbr.json
 ```
 
-Multi-GPU with DeepSpeed ZeRO-3:
+ZeRO-3 uses the matching `*_zero3.py` entrypoint and the same experiment config:
 
 ```bash
-NUM_PROCESSES=4 bash scripts/train_tokenlight_wan22_lora_zero3.sh
+accelerate launch --config_file configs/accelerate_zero3.yaml \
+  model/train_tokenlight_zero3.py --config configs/train_480/rgb.json
+accelerate launch --config_file configs/accelerate_zero3.yaml \
+  model/train_tokenlight_pbr_zero3.py --config configs/train_480/pbr.json
 ```
 
-By default this uses `configs/accelerate_zero3.yaml` and `configs/ds_z3.json`
-without CPU offload. To use CPU offload instead:
+Replace the config filename with `rgb_decoder.json` or `pbr_decoder.json` for
+decoder-space training. The latent/PBR configs use the 480 all-sets metadata and
+scene cache. `rgb_decoder.json` instead uses the fixed32 dataset with
+precomputed RGB VAE latents and shadow/direct masked RGB decoder losses. The PBR
+pair uses depth and normal maps.
+
+### Decoder-space loss
+
+The opt-in decoder loss reconstructs the predicted clean latent as
+`x0 = noise - velocity`, runs both prediction and target through the frozen Wan
+VAE decoder, and computes the loss in decoded image space. Existing configs keep
+the original latent velocity MSE.
+
+RGB-only decoder loss:
 
 ```bash
-ACCELERATE_CONFIG=configs/accelerate_zero3_cpuoffload.yaml \
-bash scripts/train_tokenlight_wan22_lora_zero3.sh
+accelerate launch --config_file configs/accelerate_zero3.yaml \
+  model/train_tokenlight_zero3.py --config configs/train_480/rgb_decoder.json
 ```
 
-The two TokenLight train entrypoints are intentionally separate:
+Joint RGB + PBR decoder loss:
 
-```text
-model/train_tokenlight_single.py   configs/train_tokenlight_single.json
-model/train_tokenlight_zero3.py    configs/train_tokenlight_zero3.json
+```bash
+accelerate launch --config_file configs/accelerate_zero3.yaml \
+  model/train_tokenlight_pbr_zero3.py --config configs/train_480/pbr_decoder.json
 ```
 
-`scripts/train_tokenlight_wan22_lora.sh` is kept only as a backwards-compatible
-alias for the single-GPU script.
+The relevant config keys are:
+
+```json
+{
+  "tokenlight_rgb_latent_loss_weight": 0.0,
+  "tokenlight_rgb_decoder_loss_weight": 1.0,
+  "tokenlight_rgb_decoder_transform": "rgb",
+  "tokenlight_pbr_latent_loss_weight": 0.0,
+  "tokenlight_pbr_decoder_loss_weight": 1.0,
+  "tokenlight_pbr_decoder_transforms": "shading:illuminance,depth:illuminance,normal:rgb",
+  "tokenlight_decoder_loss_type": "mse"
+}
+```
+
+`illuminance` is accepted as an alias of the Rec.709 luminance proxy used by
+this repository. It is appropriate for RGB lighting/shading outputs. Keep
+vector-valued normal maps in `rgb`; depth-to-luminance only treats the encoded
+grayscale depth image as a scalar and is not a physical PBR renderer.
+Set both latent and decoder weights above zero for a hybrid objective. Decoder
+loss requires substantially more VRAM and compute because the VAE decoder stays
+in the autograd graph for the prediction branch.
 
 ## TokenLight Inference
 
 ```bash
-bash scripts/infer_tokenlight_wan22.sh \
+python model/infer_tokenlight.py \
   --source data/source.png \
   --attrs '{"a":0.014,"x":0.2,"y":-0.4,"z":0.8,"r":1.0,"g":1.0,"b":1.0,"lambda":1.2,"d":0.06}' \
   --checkpoint model/train/tokenlight_wan22_lora/step-100.safetensors \

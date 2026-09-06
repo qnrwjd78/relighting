@@ -5,6 +5,15 @@ __pycache__/
 .venv/
 venv/
 .env
+.env.*
+!.env.example
+!.env.*.example
+*.pem
+*.key
+.netrc
+.pypirc
+.aws/
+.ssh/
 
 # Caches / logs
 .cache/
@@ -14,6 +23,35 @@ logs/
 wandb/
 runs/
 tensorboard_log/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+.ipynb_checkpoints/
+*.log
+*.pid
+
+# Workspace-local environments, package caches, and agent scratch files
+/miniconda3/
+/conda_envs/
+/.conda_pkgs/
+/.pip_cache/
+/.codex_tmp/
+
+# Third-party checkouts and installed packages (see docs/REPOSITORY.md)
+/repos/
+/external/
+
+# Python build artifacts / editor and OS files
+/build/
+/dist/
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
 
 # Large datasets / downloads
 data/
@@ -29,16 +67,26 @@ outputs/
 weights/
 model/train/
 model/infer/
+/model/Wan-AI/
+checkpoints/
 *.safetensors
 *.pt
 *.pth
 *.ckpt
+*.onnx
+*.npy
+*.npz
 
 # Archives / heavy media
 *.tar
 *.tar.gz
 *.zst
 *.zip
+*.tgz
+*.gz
+*.bz2
+*.xz
+*.7z
 *.exr
 *.mp4
 *.mov

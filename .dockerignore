@@ -1,0 +1,5 @@
+# The Dockerfile only needs this dependency file; source is mounted at runtime.
+**
+!docker/
+!docker/Dockerfile
+!docker/requirements.txt

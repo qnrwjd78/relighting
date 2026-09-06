@@ -1,0 +1,46 @@
+{
+  "launch": {
+    "single_command": "python model/train_coshadow_box_predictor.py --config configs/train_480/coshadow_box.json",
+    "zero3_command": "accelerate launch --config_file configs/accelerate_zero3.yaml model/train_coshadow_box_predictor.py --train_mode zero3 --config configs/train_480/coshadow_box.json"
+  },
+  "dataset": {
+    "train_metadata": "data_train/objaverse_fixed32_coshadow_480/train.jsonl",
+    "val_metadata": "data_train/objaverse_fixed32_coshadow_480/val.jsonl",
+    "dataset_base_path": "data/objaverse_fixed32_png",
+    "source_key": "input_image",
+    "object_mask_key": "mask",
+    "attrs_key": "attrs_json",
+    "image_size": 256,
+    "dataset_num_workers": 4,
+    "batch_size": 8
+  },
+  "optimization": {
+    "gradient_accumulation_steps": 1,
+    "num_epochs": 100,
+    "learning_rate": 0.0001,
+    "weight_decay": 0.01,
+    "max_grad_norm": 1.0,
+    "l1_weight": 1.0,
+    "iou_weight": 1.0,
+    "presence_weight": 1.0
+  },
+  "model": {
+    "visual_channels": "32,64,128,256",
+    "light_dim": 128,
+    "hidden_dim": 256,
+    "fourier_features": 64,
+    "fourier_sigma": 5.0,
+    "max_lights": 1,
+    "dropout": 0.1,
+    "use_coordconv": true
+  },
+  "runtime": {
+    "mixed_precision": "bf16",
+    "seed": 260302743,
+    "output_path": "outputs/train/coshadow_box_fixed32",
+    "save_steps": 1000,
+    "resume_checkpoint": null,
+    "validate_dataset_only": false,
+    "validate_dataset_samples": 128
+  }
+}

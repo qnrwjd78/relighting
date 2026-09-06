@@ -35,6 +35,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--num_frames", type=int, default=121)
     parser.add_argument("--fps", type=int, default=15)
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--cfg_scale", type=float, default=5.0)
+    parser.add_argument("--num_inference_steps", type=int, default=50)
+    parser.add_argument("--sigma_shift", type=float, default=5.0)
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--tiled", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--quality", type=int, default=5)
@@ -70,6 +73,9 @@ def main() -> int:
         width=args.width,
         input_image=input_image,
         num_frames=args.num_frames,
+        cfg_scale=args.cfg_scale,
+        num_inference_steps=args.num_inference_steps,
+        sigma_shift=args.sigma_shift,
     )
     output = Path(args.output)
     output.parent.mkdir(parents=True, exist_ok=True)

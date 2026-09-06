@@ -30,7 +30,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-DEFAULT_INFER_CONFIG_PATH = "configs/infer_config.json"
+DEFAULT_INFER_CONFIG_PATH = None
 
 
 @dataclass(frozen=True)
@@ -397,6 +397,8 @@ def setup_pipeline(args):
         extract_light_state,
         extract_lora_state,
         extract_type_state,
+        infer_light_encoder_shape,
+        infer_type_embedding_num_types,
         load_pipe,
         load_state,
     )
@@ -411,14 +413,19 @@ def setup_pipeline(args):
         pipe.load_lora(pipe.dit, state_dict=lora, alpha=1.0)
 
     token_dim = int(args.token_dim) if int(getattr(args, "token_dim", 0)) > 0 else int(pipe.dit.dim)
-    light_encoder = LightokenEncoder(
-        token_dim,
-        fourier_features=int(args.fourier_features),
-        fourier_sigma=float(args.fourier_sigma),
-        max_lights=int(getattr(args, "tokenlight_max_lights", getattr(args, "max_lights", 1))),
-    ).to(device=pipe.device, dtype=pipe.torch_dtype)
     light_checkpoint_state = load_state(args.light_checkpoint) if getattr(args, "light_checkpoint", "") else combined
     light_state = extract_light_state(light_checkpoint_state)
+    max_lights, fourier_features = infer_light_encoder_shape(
+        light_state,
+        requested_max_lights=getattr(args, "tokenlight_max_lights", getattr(args, "max_lights", 1)),
+        requested_fourier_features=int(args.fourier_features),
+    )
+    light_encoder = LightokenEncoder(
+        token_dim,
+        fourier_features=fourier_features,
+        fourier_sigma=float(args.fourier_sigma),
+        max_lights=max_lights,
+    ).to(device=pipe.device, dtype=pipe.torch_dtype)
     if light_state:
         light_encoder.load_state_dict(light_state, strict=False)
     light_encoder.eval()
@@ -426,7 +433,11 @@ def setup_pipeline(args):
     type_embedding = None
     type_state = extract_type_state(light_checkpoint_state)
     if type_state:
-        type_embedding = TokenLightTypeEmbedding(token_dim).to(device=pipe.device, dtype=pipe.torch_dtype)
+        num_types = infer_type_embedding_num_types(type_state, requested_num_types=4)
+        type_embedding = TokenLightTypeEmbedding(token_dim, num_types=num_types).to(
+            device=pipe.device,
+            dtype=pipe.torch_dtype,
+        )
         type_embedding.load_state_dict(type_state, strict=False)
         type_embedding.eval()
     return pipe, light_encoder, type_embedding
@@ -635,6 +646,8 @@ def save_config_snapshot(config_path: str, raw_config: dict[str, Any], resolved_
 
 def main() -> int:
     args = parse_args()
+    if args.config is None:
+        raise ValueError("Batch inference now requires an explicit --config path.")
     raw_config = load_json(args.config)
     config = apply_cli_overrides(raw_config, args)
     data_root = resolve_path(config.get("data", {}).get("data_root", "data/blender_relight/test"))

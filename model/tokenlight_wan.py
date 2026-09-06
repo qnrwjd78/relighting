@@ -147,6 +147,8 @@ def model_fn_wan_video_tokenlight(
     tokenlight_drop_light: bool | torch.Tensor | Sequence[bool] = False,
     tokenlight_source_latents: torch.Tensor | None = None,
     tokenlight_mask_latents: torch.Tensor | None = None,
+    tokenlight_extra_mask_latents: Sequence[torch.Tensor] | None = None,
+    tokenlight_additive_condition_latents: torch.Tensor | None = None,
     use_gradient_checkpointing: bool = False,
     use_gradient_checkpointing_offload: bool = False,
     **kwargs,
@@ -183,6 +185,30 @@ def model_fn_wan_video_tokenlight(
     target_grid = patches.shape[2:]
     target_tokens = rearrange(patches, "b c f h w -> b (f h w) c").contiguous()
     target_tokens = _add_type_embedding(target_tokens, tokenlight_type_embedding, TOKENLIGHT_TYPE_TARGET)
+    if tokenlight_additive_condition_latents is not None:
+        condition_tokens, condition_grid = _patch_to_tokens(
+            dit,
+            tokenlight_additive_condition_latents,
+            batch,
+            control_camera_latents_input,
+        )
+        # ``dit.patchify`` is affine (its Conv3d has a bias).  Remove the
+        # zero-input response so a zero-initialized additive condition is an
+        # exact no-op rather than adding the patch-embedding bias twice.
+        zero_condition_tokens, zero_condition_grid = _patch_to_tokens(
+            dit,
+            torch.zeros_like(tokenlight_additive_condition_latents),
+            batch,
+            control_camera_latents_input,
+        )
+        if tuple(condition_grid) != tuple(target_grid):
+            raise ValueError(
+                "Additive TokenLight condition grid must match the target grid: "
+                f"{tuple(condition_grid)} != {tuple(target_grid)}"
+            )
+        if tuple(zero_condition_grid) != tuple(condition_grid):
+            raise RuntimeError("Zero additive TokenLight condition changed the patch grid")
+        target_tokens = target_tokens + condition_tokens - zero_condition_tokens
     target_freqs = _freqs_for_grid(dit, target_grid, target_tokens.device)
 
     prefix_tokens: list[torch.Tensor] = []
@@ -194,6 +220,11 @@ def model_fn_wan_video_tokenlight(
         prefix_freqs.append(_freqs_for_grid(dit, source_grid, target_tokens.device))
     if tokenlight_mask_latents is not None:
         mask_tokens, mask_grid = _patch_to_tokens(dit, tokenlight_mask_latents, batch)
+        mask_tokens = _add_type_embedding(mask_tokens, tokenlight_type_embedding, TOKENLIGHT_TYPE_MASK)
+        prefix_tokens.append(mask_tokens)
+        prefix_freqs.append(_freqs_for_grid(dit, mask_grid, target_tokens.device))
+    for extra_mask_latents in tokenlight_extra_mask_latents or ():
+        mask_tokens, mask_grid = _patch_to_tokens(dit, extra_mask_latents, batch)
         mask_tokens = _add_type_embedding(mask_tokens, tokenlight_type_embedding, TOKENLIGHT_TYPE_MASK)
         prefix_tokens.append(mask_tokens)
         prefix_freqs.append(_freqs_for_grid(dit, mask_grid, target_tokens.device))
